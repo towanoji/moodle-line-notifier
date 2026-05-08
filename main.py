@@ -88,91 +88,90 @@ def _fill_credentials(fields: dict) -> dict:
 def login_moodle_session() -> tuple[requests.Session, str, str]:
     """
     Moodle にウェブログインし (session, sesskey, userid) を返す。
-
-    ① Moodle ネイティブログイン（/login/index.php）
-    ② SSO リダイレクト（UNIVERSAL PASSPORT 等）に自動対応
+    UNIVERSAL PASSPORT 等の SSO に対応。
     """
     session = requests.Session()
     session.headers.update(HEADERS)
-
     moodle_host = urlparse(MOODLE_URL).netloc
 
-    # ユーザー名・パスワードフィールド名のパターン（部分一致）
-    USER_PATS = ["username", "loginid", "login_id", "j_username", "loginid", "userid"]
-    PASS_PATS = ["password", "j_password", "passwd"]
+    def _all_inputs(soup: BeautifulSoup, form=None) -> dict:
+        """フォーム（またはページ全体）の input を name または id で収集"""
+        source = form if form else soup
+        fields = {}
+        for inp in source.find_all("input"):
+            t = inp.get("type", "text").lower()
+            if t in ("submit", "button", "image", "reset"):
+                continue
+            name = inp.get("name") or inp.get("id")
+            if name:
+                fields[name] = inp.get("value", "")
+        return fields
 
-    def _is_login_form(fields: dict) -> bool:
-        """username/password フィールドを含む本物のログインフォームか判定"""
-        has_user = any(
-            any(up in k.lower() for up in USER_PATS) and "token" not in k.lower()
-            for k in fields
-        )
-        has_pass = any(any(pp in k.lower() for pp in PASS_PATS) for k in fields)
-        return has_user and has_pass
+    # ── STEP 1: /my/ にアクセスして SSO リダイレクトを発生させる ──
+    resp = session.get(f"{MOODLE_URL}/my/", allow_redirects=True, timeout=30)
+    print(f"[INFO] 初回リダイレクト先: {resp.url}")
 
-    # ── STEP 1: ログインページを取得（複数パスを試行）──
-    # /login/index.php が 404 になる大学もあるため /my/ から試みる
-    resp = None
-    for start_path in ["/my/", "/", "/login/index.php"]:
-        r = session.get(f"{MOODLE_URL}{start_path}", allow_redirects=True, timeout=30)
-        soup = BeautifulSoup(r.text, "html.parser")
-        _, fields_check = _get_form_fields(soup)
-        print(f"[INFO] 開始URL試行: {r.url}")
-        if _is_login_form(fields_check):
-            resp = r
-            break
-        # ログインフォームがなくてもリダイレクト先がMoodle外ならそこから続行
-        if urlparse(r.url).netloc != moodle_host:
-            resp = r
-            break
-        resp = r  # 最後のものを使う
-
-    print(f"[INFO] ログインページ URL: {resp.url}")
-
-    # ── STEP 2: フォームを最大6段階追従 ──
-    for step in range(6):
-        action, fields = _get_form_fields(soup)
-        if not action:
-            print(f"[INFO] Step{step+1}: フォームなし → 終了")
-            break
-
-        if not action.startswith("http"):
-            action = urljoin(resp.url, action)
-
-        if _is_login_form(fields):
-            fields = _fill_credentials(fields)
-            print(f"[INFO] Step{step+1}: ログインフォームに送信 → {action}")
-        else:
-            print(f"[INFO] Step{step+1}: 中継フォームを通過 → {action}")
-            print(f"[INFO]   フィールド: {list(fields.keys())}")
-
-        resp = session.post(action, data=fields, allow_redirects=True, timeout=30)
+    # ── STEP 2: ログイン完了まで最大8ステップ追従 ──
+    for step in range(8):
         soup = BeautifulSoup(resp.text, "html.parser")
-        print(f"[INFO] Step{step+1}: 遷移先 URL: {resp.url}")
 
-        if urlparse(resp.url).netloc == moodle_host and "M.cfg" in resp.text:
+        # 成功判定
+        if "M.cfg" in resp.text and urlparse(resp.url).netloc == moodle_host:
+            print("[INFO] Moodle ダッシュボードに到達しました")
             break
+
+        # ページ上のフォーム・パスワード入力を調査
+        all_forms  = soup.find_all("form")
+        pass_fields = soup.find_all("input", {"type": "password"})
+        print(f"[INFO] Step{step+1} URL: {resp.url}")
+        print(f"[INFO]   フォーム数={len(all_forms)}, passwordフィールド数={len(pass_fields)}")
+
+        if pass_fields:
+            # ── パスワード入力あり → ログインフォームを送信 ──
+            pw = pass_fields[0]
+            form = pw.find_parent("form") or (all_forms[0] if all_forms else None)
+            action = (form.get("action", "") if form else "") or str(resp.url)
+            if not action.startswith("http"):
+                action = urljoin(str(resp.url), action)
+
+            fields = _all_inputs(soup, form)
+            fields = _fill_credentials(fields)
+            print(f"[INFO]   ログインフォーム送信 → {action}")
+            print(f"[INFO]   フィールド名: {[k for k in fields if 'pass' not in k.lower()]}")
+            resp = session.post(action, data=fields, allow_redirects=True, timeout=30)
+
+        elif all_forms:
+            # ── フォームはあるがパスワード入力なし → 中継フォームとして通過 ──
+            form = all_forms[0]
+            action = form.get("action", "") or str(resp.url)
+            if not action.startswith("http"):
+                action = urljoin(str(resp.url), action)
+            fields = _all_inputs(soup, form)
+            print(f"[INFO]   中継フォーム ({len(fields)} fields) → {action}")
+            resp = session.post(action, data=fields, allow_redirects=True, timeout=30)
+
+        else:
+            print(f"[INFO]   フォームなし → 終了")
+            break
+
+        print(f"[INFO]   → 遷移先: {resp.url}")
 
     # ── STEP 3: ログイン成功確認 ──
     if "M.cfg" not in resp.text:
+        soup = BeautifulSoup(resp.text, "html.parser")
         title = soup.find("title")
-        page_title = title.text.strip() if title else "不明"
         raise RuntimeError(
-            f"Moodle ログイン失敗（最終URL: {resp.url} / ページ: {page_title}）\n"
+            f"Moodle ログイン失敗（最終URL: {resp.url} / ページ: {title.text.strip() if title else 'N/A'}）\n"
             "MOODLE_USERNAME / MOODLE_PASSWORD を確認してください。"
         )
 
     # ── STEP 4: sesskey と userid を抽出 ──
     sesskey_m = re.search(r'"sesskey"\s*:\s*"([^"]+)"', resp.text)
     userid_m  = re.search(r'"userid"\s*:\s*(\d+)',      resp.text)
-
     if not sesskey_m:
         raise RuntimeError("sesskey の取得に失敗しました。")
 
-    sesskey = sesskey_m.group(1)
-    userid  = userid_m.group(1) if userid_m else None
-
-    return session, sesskey, userid
+    return session, sesskey_m.group(1), userid_m.group(1) if userid_m else None
 
 
 # ─────────────────────────────────────
