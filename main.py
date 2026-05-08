@@ -61,13 +61,70 @@ def _make_session() -> requests.Session:
 
 
 # ─────────────────────────────────────
+# KU-LMS ログイン補助
+# ─────────────────────────────────────
+def _get_normal_login_flag(session: requests.Session) -> int | None:
+    """
+    JS ファイルから backClick() が設定する lginFlag 値を抽出する。
+    見つからない場合は None を返す。
+    """
+    for path in [
+        "/lms/js/framework/common.js",
+        "/lms/js/framework/parent.js",
+        "/lms/js/framework/pager.js",
+    ]:
+        try:
+            resp = session.get(f"{MOODLE_URL}{path}", timeout=10)
+            if resp.status_code != 200 or "backClick" not in resp.text:
+                continue
+            js = resp.text
+            print(f"[INFO] JS 取得成功: {path} ({len(js)} bytes)")
+            # backClick 関数内の lginFlag 代入を探す
+            for pat in [
+                r'lginFlagValue["\']?\s*\)\.value\s*=\s*["\']?(\d+)',
+                r'getElementById\(["\']lginFlagValue["\'].*?=\s*["\']?(\d+)',
+                r'\.lginFlag["\']?\s*=\s*["\']?(\d+)',
+                r'lginFlag\b[^=]*=\s*(\d+)',
+            ]:
+                m = re.search(pat, js)
+                if m:
+                    val = int(m.group(1))
+                    print(f"[INFO] JS から lginFlag={val} を検出")
+                    return val
+            # backClick 関数の前後50文字にある数字を探す
+            bc_match = re.search(r'backClick[\s\S]{0,300}?(\d+)', js)
+            if bc_match:
+                val = int(bc_match.group(1))
+                print(f"[INFO] backClick 近辺から lginFlag={val} を推定")
+                return val
+        except Exception as e:
+            print(f"[DEBUG] JS 取得失敗 ({path}): {e}")
+    return None
+
+
+def _is_login_success(resp_url: str) -> bool:
+    """
+    レスポンスの最終URLを見てログイン成功かどうか判定する。
+    成功 → /lginLgir/login でも /error/ でもない URL に遷移する
+    失敗 → /lginLgir/login に戻る or /error/ に飛ぶ
+    """
+    url = resp_url.split("#")[0]  # フラグメント除去
+    if "/lginLgir/login" in url:
+        return False
+    if "/lginLgir/;" in url:   # ログインページのルート
+        return False
+    if "/error/" in url:
+        return False
+    return True
+
+
+# ─────────────────────────────────────
 # KU-LMS ログイン（HTTP requests 方式）
 # ─────────────────────────────────────
 def login_session() -> tuple[requests.Session, str]:
     """
     KU-LMS に requests で直接 HTTP ログインし、
     (requests.Session, sid) を返す。
-    lginFlag=0,1,3 を順に試みる。
     """
     s = _make_session()
 
@@ -80,12 +137,18 @@ def login_session() -> tuple[requests.Session, str]:
         raise RuntimeError(f"SID 取得失敗 (URL: {resp.url})")
     print(f"[INFO] SID 取得: {sid[:12]}...")
 
+    # 2. JS から正しい lginFlag 値を取得
+    detected_flag = _get_normal_login_flag(s)
+    flags_to_try = ([detected_flag] if detected_flag is not None else []) + [0, 1, 3]
+    flags_to_try = list(dict.fromkeys(flags_to_try))  # 重複除去
+
     login_url = f"{MOODLE_URL}/lginLgir/login;SID={sid}"
     referer   = f"{MOODLE_URL}/lginLgir/;SID={sid}"
 
-    # 2. lginFlag を変えながらログイン POST を試みる
-    for flag in [0, 1, 3]:
-        resp = s.post(
+    # 3. lginFlag を変えながらログイン POST を試みる
+    last_resp = None
+    for flag in flags_to_try:
+        last_resp = s.post(
             login_url,
             data={
                 "lginFlag": str(flag),
@@ -97,37 +160,35 @@ def login_session() -> tuple[requests.Session, str]:
             timeout=30,
             allow_redirects=True,
         )
-        final_url = resp.url
+        final_url = last_resp.url
         print(f"[INFO] lginFlag={flag}: {final_url}")
 
-        # ログイン成功 → /index や /lginTpic/ にリダイレクトされる
-        if "login" not in final_url and "error" not in final_url:
+        if _is_login_success(final_url):
             new_sid = _extract_sid(final_url) or sid
-            print(f"[INFO] ログイン成功 (lginFlag={flag})")
+            print(f"[INFO] ✅ ログイン成功 (lginFlag={flag})")
             return s, new_sid
 
-        # ページ内にログアウトリンクがあれば成功とみなす
-        if "ログアウト" in resp.text and "個人設定" in resp.text:
-            new_sid = _extract_sid(final_url) or sid
-            print(f"[INFO] ログイン成功（ページ内容より判定, flag={flag}）")
-            return s, new_sid
+        print(f"[DEBUG] flag={flag}: ログインページに戻った（失敗）")
 
-    # すべて失敗した場合 → 最後のレスポンスの一部を出力してデバッグ
-    print(f"[DEBUG] ログイン失敗 最終URL: {resp.url}")
-    soup = BeautifulSoup(resp.text, "html.parser")
+    # すべて失敗
+    print("[ERROR] 全フラグでログイン失敗")
     # エラーメッセージを探す
-    for cls in ["error", "alert", "lms-error", "lms-message"]:
-        msgs = soup.find_all(class_=re.compile(cls))
-        for m in msgs:
-            print(f"[DEBUG] エラー要素: {m.get_text(strip=True)[:100]}")
-    # ページタイトル
-    title = soup.find("title")
-    print(f"[DEBUG] ページタイトル: {title.string if title else '不明'}")
+    if last_resp is not None:
+        soup = BeautifulSoup(last_resp.text, "html.parser")
+        for el in soup.find_all(class_=re.compile(r"(error|alert|warn|message)", re.I)):
+            t = el.get_text(strip=True)
+            if t:
+                print(f"[DEBUG] ページエラー: {t[:120]}")
 
     raise RuntimeError(
-        "全 lginFlag でログイン失敗。\n"
-        "GitHub Actions の IP がブロックされている可能性があります。\n"
-        "セルフホストランナーまたは VPN の利用を検討してください。"
+        "KU-LMS ログイン失敗。\n"
+        "【考えられる原因】\n"
+        "  1. GitHub Actions の IP が大学側でブロックされている\n"
+        "  2. MOODLE_USERNAME / MOODLE_PASSWORD が間違っている\n"
+        "  3. 連続失敗によりアカウントが一時ロックされた\n"
+        "【解決策】\n"
+        "  - セルフホストランナー（キャンパス内 PC）での実行\n"
+        "  - 手動でログインして Cookie を Secret に保存する方式への切り替え"
     )
 
 
