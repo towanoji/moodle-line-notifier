@@ -97,14 +97,23 @@ def login_moodle_session() -> tuple[requests.Session, str, str]:
 
     moodle_host = urlparse(MOODLE_URL).netloc
 
+    DEBUG = os.environ.get("MOODLE_DEBUG", "0") == "1"
+
     # ── STEP 1: ログインページを取得（SSO リダイレクトに追従）──
     resp = session.get(f"{MOODLE_URL}/login/index.php", allow_redirects=True, timeout=30)
     soup = BeautifulSoup(resp.text, "html.parser")
+    if DEBUG:
+        print(f"[DEBUG] Step1 URL: {resp.url}")
+        action0, fields0 = _get_form_fields(soup)
+        print(f"[DEBUG] Step1 form action: {action0}")
+        print(f"[DEBUG] Step1 form fields: {list(fields0.keys())}")
 
-    # ── STEP 2: ログインフォームに認証情報を送信（最大3回リダイレクト対応）──
-    for _ in range(3):
+    # ── STEP 2: ログインフォームに認証情報を送信（最大5回リダイレクト対応）──
+    for step in range(5):
         action, fields = _get_form_fields(soup)
         if not action:
+            if DEBUG:
+                print(f"[DEBUG] Step{step+2}: フォームなし → 終了")
             break
 
         # action が相対URLなら絶対URLに変換
@@ -112,8 +121,16 @@ def login_moodle_session() -> tuple[requests.Session, str, str]:
             action = urljoin(resp.url, action)
 
         fields = _fill_credentials(fields)
+        if DEBUG:
+            print(f"[DEBUG] Step{step+2} POST → {action}")
+            print(f"[DEBUG] Step{step+2} fields: {list(fields.keys())}")
+
         resp = session.post(action, data=fields, allow_redirects=True, timeout=30)
         soup = BeautifulSoup(resp.text, "html.parser")
+
+        if DEBUG:
+            print(f"[DEBUG] Step{step+2} response URL: {resp.url}")
+            print(f"[DEBUG] Step{step+2} M.cfg present: {'M.cfg' in resp.text}")
 
         # Moodle のダッシュボードに到達したか確認
         if urlparse(resp.url).netloc == moodle_host and "M.cfg" in resp.text:
@@ -121,6 +138,10 @@ def login_moodle_session() -> tuple[requests.Session, str, str]:
 
     # ── STEP 3: ログイン成功確認 ──
     if "M.cfg" not in resp.text:
+        if DEBUG:
+            title = soup.find("title")
+            print(f"[DEBUG] 最終ページタイトル: {title.text if title else 'N/A'}")
+            print(f"[DEBUG] 最終URL: {resp.url}")
         raise RuntimeError(
             "Moodle ログイン失敗。MOODLE_USERNAME / MOODLE_PASSWORD を確認してください。"
         )
