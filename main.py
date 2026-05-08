@@ -1,9 +1,10 @@
 #!/usr/bin/env python3
 """
-工学院大学 Moodle 課題締切 LINE通知ツール
+工学院大学 KU-LMS 課題締切 LINE通知ツール
 =========================================
-Playwright で SSO（UNIVERSAL PASSPORT）認証を行い、
-Moodle AJAX API で課題の締切を取得して LINE 通知します。
+KU-LMS（UNIVERSAL PASSPORT）に requests で直接ログインし、
+課題の締切を取得して LINE 通知します。
+Playwright 不要・ブラウザ不要で動作します。
 
 GitHub Actions の cron で毎朝自動実行することを想定しています。
 """
@@ -13,6 +14,7 @@ import re
 import sys
 import json
 import requests
+from bs4 import BeautifulSoup
 from datetime import datetime, timedelta, timezone
 
 # ─────────────────────────────────────
@@ -35,303 +37,147 @@ JST = timezone(timedelta(hours=9))
 
 
 # ─────────────────────────────────────
-# Playwright ログイン（SSO 対応）
+# ユーティリティ
 # ─────────────────────────────────────
-def login_moodle_session() -> tuple[requests.Session, str, str]:
-    """
-    Playwright でブラウザを操作して SSO ログインし、
-    (requests.Session, sesskey, userid) を返す。
-    """
-    from playwright.sync_api import sync_playwright, TimeoutError as PwTimeout
+def _extract_sid(url: str) -> str:
+    """URL パスから ;SID=... を抽出する"""
+    m = re.search(r";SID=([^#?/]+)", url)
+    return m.group(1) if m else ""
 
-    with sync_playwright() as p:
-        browser = p.chromium.launch(
-            headless=True,
-            args=["--no-sandbox", "--disable-dev-shm-usage"],
-        )
-        ctx = browser.new_context(
-            user_agent=(
-                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-                "AppleWebKit/537.36 (KHTML, like Gecko) "
-                "Chrome/120.0.0.0 Safari/537.36"
-            ),
-            ignore_https_errors=True,
-        )
-        page = ctx.new_page()
 
-        # ── 1. Moodle ルートへアクセス → SSO にリダイレクト ──
-        # /my/ は notFound になるためルート(/)からアクセスする
-        print(f"[INFO] Moodle にアクセス中...")
-        page.goto(f"{MOODLE_URL}/", timeout=60_000, wait_until="networkidle")
-        print(f"[INFO] リダイレクト先: {page.url}")
-
-        # ── 2. JSでDOM要素を調査 ──
-        page.wait_for_timeout(5_000)  # JS描画を十分待つ
-        print(f"[DEBUG] ページタイトル: {page.title()}")
-
-        # JS経由でinput要素を全列挙
-        inputs_info = page.evaluate("""() => {
-            return Array.from(document.querySelectorAll('input')).map(el => ({
-                type: el.type, name: el.name, id: el.id,
-                className: el.className.substring(0,50),
-                placeholder: el.placeholder,
-                visible: el.offsetParent !== null
-            }));
-        }""")
-        print(f"[DEBUG] input要素: {json.dumps(inputs_info, ensure_ascii=False)}")
-
-        # JS経由でform要素を全列挙
-        forms_info = page.evaluate("""() => {
-            return Array.from(document.querySelectorAll('form')).map(f => ({
-                name: f.name, id: f.id, action: f.action,
-                html: f.innerHTML.substring(0, 300)
-            }));
-        }""")
-        print(f"[DEBUG] form要素: {json.dumps(forms_info, ensure_ascii=False)}")
-
-        # すでにMoodleにいる場合はスキップ
-        if "M.cfg" in page.content():
-            print("[INFO] すでにMoodleにログイン済み")
-        else:
-            # ── 3. GakuNinモードなら通常ログインに切り替え ──
-            # ページが「統合認証（GakuNin）」モードで表示されている場合、
-            # 「通常のログイン方法」リンクをクリックしてID/PWフォームを表示させる
-            try:
-                back_link = page.locator("a:has-text('通常のログイン方法')")
-                if back_link.count() > 0:
-                    print("[INFO] GakuNinモード検出 → 通常ログインに切り替え")
-                    back_link.click(timeout=5_000)
-                    page.wait_for_timeout(3_000)  # JS描画を待つ
-
-                    # 切り替え後のinput要素を再確認
-                    inputs_info2 = page.evaluate("""() => {
-                        return Array.from(document.querySelectorAll('input:not([type="hidden"])')).map(el => ({
-                            type: el.type, name: el.name, id: el.id,
-                            visible: el.offsetParent !== null
-                        }));
-                    }""")
-                    print(f"[DEBUG] 切り替え後input: {json.dumps(inputs_info2, ensure_ascii=False)}")
-            except PwTimeout:
-                print("[WARN] 通常ログインリンクのクリックに失敗")
-
-            # ── 4. POSTリクエストを傍受して送信データを確認 ──
-            captured_posts = []
-            def _log_req(route, request):
-                if request.method == "POST":
-                    captured_posts.append({
-                        "url": request.url,
-                        "body": request.post_data or "",
-                    })
-                route.continue_()
-            page.route("**/*", _log_req)
-
-            # ── 5. backClick()がフォームを更新するのを待つ ──
-            try:
-                page.wait_for_function(
-                    "() => { const f=document.getElementById('loginForm'); return f && f.action && f.action.includes('/login'); }",
-                    timeout=10_000,
-                )
-                print("[INFO] フォームアクション更新確認")
-            except PwTimeout:
-                print("[WARN] フォームアクション更新タイムアウト")
-
-            # lginFlagの値を確認
-            lgin_flag = page.evaluate("() => document.querySelector('#loginForm input[name=\"lginFlag\"]')?.value")
-            print(f"[DEBUG] lginFlag値: {lgin_flag}")
-
-            # ── 6. JSで値をセットしてsubmit（成功実績ある方式）──
-            page.wait_for_selector("input[name='userId']", state="visible", timeout=10_000)
-            submit_result = page.evaluate(
-                """([user, pw]) => {
-                    const userEl = document.querySelector('#loginForm input[name="userId"]');
-                    const pwEl   = document.querySelector('#loginForm input[name="password"]');
-                    const form   = document.getElementById('loginForm');
-                    if (!userEl || !pwEl || !form) return 'missing';
-                    userEl.value = user;
-                    pwEl.value   = pw;
-                    // jQuery経由でも値をセット（jQuery管理の場合の保険）
-                    if (window.jQuery) {
-                        window.jQuery(userEl).val(user).trigger('change');
-                        window.jQuery(pwEl).val(pw).trigger('change');
-                    }
-                    // 値確認
-                    const check = userEl.value + '/' + pwEl.value.length + 'chars';
-                    form.submit();
-                    return check;
-                }""",
-                [MOODLE_USERNAME, MOODLE_PASSWORD],
-            )
-            print(f"[INFO] フォーム送信: {submit_result}")
-
-            # ── 7. ページ遷移を待つ（SPA二次ロードも考慮して長めに）──
-            try:
-                page.wait_for_load_state("networkidle", timeout=30_000)
-            except PwTimeout:
-                pass
-            page.wait_for_timeout(4_000)  # ハッシュルーティングの再描画を待つ
-            print(f"[INFO] ログイン後URL: {page.url}")
-
-            # page.content()はナビゲーション中に呼ぶとエラーになるのでリトライ
-            content = ""
-            for _attempt in range(5):
-                try:
-                    content = page.content()
-                    break
-                except Exception:
-                    page.wait_for_timeout(2_000)
-
-            # ── 7b. ログイン失敗判定とエラーメッセージ取得 ──
-            login_succeeded = "/lginLgir/index" in page.url or "/lginTpic" in page.url
-            print(f"[INFO] ログイン結果: {'成功' if login_succeeded else '失敗'} (URL: {page.url})")
-
-            # POST送信データを確認（実際に何が送られたか）
-            # passwordは文字数のみ表示
-            for p in captured_posts:
-                body = p["body"]
-                # passwordの実値は隠す
-                body_safe = re.sub(r'(password=)[^&]+', r'\1***', body)
-                print(f"[DEBUG] POST送信: url={p['url'][-40:]} body={body_safe[:200]}")
-
-            if not login_succeeded:
-                # エラーメッセージを探す
-                err_msgs = page.evaluate("""() => {
-                    const sels = ['[class*="error"]','[class*="alert"]','[class*="warn"]',
-                                  '.lms-login-error','.lms-message','.message','p.error'];
-                    const results = [];
-                    for (const sel of sels) {
-                        document.querySelectorAll(sel).forEach(el => {
-                            const t = el.textContent.trim();
-                            if (t) results.push({sel, text: t.substring(0,100)});
-                        });
-                    }
-                    return results;
-                }""")
-                print(f"[DEBUG] エラーメッセージ: {json.dumps(err_msgs, ensure_ascii=False)}")
-                # ログインフォームのHTML（エラー内容確認）
-                login_html = page.evaluate("() => document.getElementById('loginForm')?.innerHTML?.substring(0,600) ?? ''")
-                print(f"[DEBUG] loginForm HTML: {login_html}")
-
-            if "M.cfg" not in content:
-                # SIDをURLから抽出
-                sid_match = re.search(r';SID=([^#?/]+)', page.url)
-                sid = sid_match.group(1) if sid_match else ""
-                print(f"[DEBUG] SID: {sid[:10]}...")
-
-                # ページ内の全リンクを列挙
-                links = page.evaluate("""() => {
-                    return Array.from(document.querySelectorAll('a[href]')).map(a => ({
-                        text: a.textContent.trim().substring(0, 60),
-                        href: a.href
-                    })).filter(l => l.href && !l.href.startsWith('javascript'));
-                }""")
-                print(f"[DEBUG] ページ内リンク: {json.dumps(links[:40], ensure_ascii=False)}")
-
-                # ネットワークリクエストをキャプチャしながら/lginTpic/へ移動
-                captured = []
-                page.on("request", lambda r: captured.append(r.url)
-                        if any(k in r.url for k in ['json','ajax','api','assign','course','task','kadai'])
-                        else None)
-
-                if sid:
-                    topics_url = f"{MOODLE_URL}/lginTpic/;SID={sid}"
-                    try:
-                        page.goto(topics_url, timeout=15_000, wait_until="networkidle")
-                        page.wait_for_timeout(3_000)
-                        print(f"[DEBUG] トピックページURL: {page.url}")
-                        topic_html = ""
-                        for _a in range(3):
-                            try:
-                                topic_html = page.content()
-                                break
-                            except Exception:
-                                page.wait_for_timeout(2_000)
-                        print(f"[DEBUG] トピックHTML(先頭3000字): {topic_html[:3000]}")
-                    except Exception as e:
-                        print(f"[DEBUG] lginTpic移動エラー: {e}")
-
-                page.wait_for_timeout(3_000)
-                print(f"[DEBUG] キャプチャAPIリクエスト: {captured[:30]}")
-
-        # ── 7. sesskey / userid を取得 ──
-        # ナビゲーション中のpage.content()エラーを防ぐためリトライ
-        content = ""
-        for _a in range(5):
-            try:
-                content = page.content()
-                break
-            except Exception:
-                page.wait_for_timeout(2_000)
-        sesskey_m = re.search(r'"sesskey"\s*:\s*"([^"]+)"', content)
-        userid_m  = re.search(r'"userid"\s*:\s*(\d+)',      content)
-
-        if not sesskey_m:
-            browser.close()
-            raise RuntimeError(
-                f"sesskey が取得できません。ログインに失敗した可能性があります (URL: {page.url})"
-            )
-
-        sesskey = sesskey_m.group(1)
-        userid  = userid_m.group(1) if userid_m else None
-
-        # ── 8. ブラウザのクッキーを requests.Session に移植 ──
-        session = requests.Session()
-        session.headers["User-Agent"] = (
+def _make_session() -> requests.Session:
+    s = requests.Session()
+    s.headers.update({
+        "User-Agent": (
             "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-            "AppleWebKit/537.36 Chrome/120.0.0.0 Safari/537.36"
+            "AppleWebKit/537.36 (KHTML, like Gecko) "
+            "Chrome/120.0.0.0 Safari/537.36"
+        ),
+        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+        "Accept-Language": "ja,en-US;q=0.9,en;q=0.8",
+        "Accept-Encoding": "gzip, deflate, br",
+    })
+    return s
+
+
+# ─────────────────────────────────────
+# KU-LMS ログイン（HTTP requests 方式）
+# ─────────────────────────────────────
+def login_session() -> tuple[requests.Session, str]:
+    """
+    KU-LMS に requests で直接 HTTP ログインし、
+    (requests.Session, sid) を返す。
+    lginFlag=0,1,3 を順に試みる。
+    """
+    s = _make_session()
+
+    # 1. GET / → ログインページへリダイレクト（SID 付き URL を取得）
+    resp = s.get(f"{MOODLE_URL}/", timeout=30, allow_redirects=True)
+    print(f"[INFO] 初期URL: {resp.url}")
+
+    sid = _extract_sid(resp.url)
+    if not sid:
+        raise RuntimeError(f"SID 取得失敗 (URL: {resp.url})")
+    print(f"[INFO] SID 取得: {sid[:12]}...")
+
+    login_url = f"{MOODLE_URL}/lginLgir/login;SID={sid}"
+    referer   = f"{MOODLE_URL}/lginLgir/;SID={sid}"
+
+    # 2. lginFlag を変えながらログイン POST を試みる
+    for flag in [0, 1, 3]:
+        resp = s.post(
+            login_url,
+            data={
+                "lginFlag": str(flag),
+                "userId":   MOODLE_USERNAME,
+                "password": MOODLE_PASSWORD,
+            },
+            headers={"Referer": referer,
+                     "Content-Type": "application/x-www-form-urlencoded"},
+            timeout=30,
+            allow_redirects=True,
         )
-        for ck in ctx.cookies():
-            session.cookies.set(ck["name"], ck["value"])
+        final_url = resp.url
+        print(f"[INFO] lginFlag={flag}: {final_url}")
 
-        browser.close()
-        print(f"[INFO] 認証完了 (userid={userid})")
-        return session, sesskey, userid
+        # ログイン成功 → /index や /lginTpic/ にリダイレクトされる
+        if "login" not in final_url and "error" not in final_url:
+            new_sid = _extract_sid(final_url) or sid
+            print(f"[INFO] ログイン成功 (lginFlag={flag})")
+            return s, new_sid
 
+        # ページ内にログアウトリンクがあれば成功とみなす
+        if "ログアウト" in resp.text and "個人設定" in resp.text:
+            new_sid = _extract_sid(final_url) or sid
+            print(f"[INFO] ログイン成功（ページ内容より判定, flag={flag}）")
+            return s, new_sid
 
-# ─────────────────────────────────────
-# Moodle AJAX API
-# ─────────────────────────────────────
-def _ajax_call(session: requests.Session, sesskey: str,
-               methodname: str, args: dict) -> dict | list:
-    """Moodle の AJAX API エンドポイントを呼び出す"""
-    url = f"{MOODLE_URL}/lib/ajax/service.php?sesskey={sesskey}&info={methodname}"
-    resp = session.post(
-        url,
-        data=json.dumps([{"index": 0, "methodname": methodname, "args": args}]),
-        headers={"Content-Type": "application/json"},
-        timeout=30,
+    # すべて失敗した場合 → 最後のレスポンスの一部を出力してデバッグ
+    print(f"[DEBUG] ログイン失敗 最終URL: {resp.url}")
+    soup = BeautifulSoup(resp.text, "html.parser")
+    # エラーメッセージを探す
+    for cls in ["error", "alert", "lms-error", "lms-message"]:
+        msgs = soup.find_all(class_=re.compile(cls))
+        for m in msgs:
+            print(f"[DEBUG] エラー要素: {m.get_text(strip=True)[:100]}")
+    # ページタイトル
+    title = soup.find("title")
+    print(f"[DEBUG] ページタイトル: {title.string if title else '不明'}")
+
+    raise RuntimeError(
+        "全 lginFlag でログイン失敗。\n"
+        "GitHub Actions の IP がブロックされている可能性があります。\n"
+        "セルフホストランナーまたは VPN の利用を検討してください。"
     )
-    resp.raise_for_status()
-    result = resp.json()
-
-    if not result:
-        raise RuntimeError(f"AJAX API 空レスポンス [{methodname}]")
-    if result[0].get("error"):
-        raise RuntimeError(f"AJAX API エラー [{methodname}]: {result[0]}")
-
-    return result[0]["data"]
 
 
-def get_assignments(session: requests.Session, sesskey: str, userid: str) -> list[dict]:
-    """履修中の全コースから締切付き課題を取得する"""
-    courses = _ajax_call(session, sesskey, "core_enrol_get_users_courses",
-                         {"userid": int(userid)})
-    if not courses:
-        return []
+# ─────────────────────────────────────
+# KU-LMS 課題取得
+# ─────────────────────────────────────
+def get_assignments(s: requests.Session, sid: str) -> list[dict]:
+    """
+    ログイン済みセッションを使ってコース一覧と課題を取得する。
+    KU-LMS の API / ページ構造を探索しながら取得する。
+    """
+    assignments: list[dict] = []
 
-    course_ids = [c["id"] for c in courses]
-    result = _ajax_call(session, sesskey, "mod_assign_get_assignments",
-                        {"courseids": course_ids, "capabilities": []})
+    # ── トピック（コース一覧）ページを取得 ──
+    topics_url = f"{MOODLE_URL}/lginTpic/;SID={sid}"
+    resp = s.get(topics_url, timeout=30, allow_redirects=True)
+    print(f"[INFO] トピックURL: {resp.url}")
 
-    assignments = []
-    for course in result.get("courses", []):
-        for assign in course.get("assignments", []):
-            due_ts = assign.get("duedate", 0)
-            if due_ts and due_ts > 0:
-                assignments.append({
-                    "course":  course["fullname"],
-                    "name":    assign["name"],
-                    "duedate": datetime.fromtimestamp(due_ts, tz=JST),
-                })
+    if "error" in resp.url or resp.status_code >= 400:
+        print(f"[WARN] トピックページ取得失敗: {resp.url}")
+        return assignments
+
+    soup = BeautifulSoup(resp.text, "html.parser")
+
+    # デバッグ: ページタイトルとリンク一覧を出力
+    title = soup.find("title")
+    print(f"[DEBUG] トピックページタイトル: {title.string if title else '不明'}")
+
+    links = [(a.get_text(strip=True), a.get("href", ""))
+             for a in soup.find_all("a", href=True)
+             if not a["href"].startswith("javascript")]
+    print(f"[DEBUG] リンク数: {len(links)}")
+    for text, href in links[:30]:
+        print(f"  [{text[:40]}] → {href[:80]}")
+
+    # ── 課題・締切情報を探す（よくある class 名で試す）──
+    deadline_candidates = soup.find_all(
+        class_=re.compile(r"(assign|deadline|kadai|due|task|report)", re.I)
+    )
+    print(f"[DEBUG] 締切候補要素数: {len(deadline_candidates)}")
+    for el in deadline_candidates[:10]:
+        print(f"  {el.get_text(strip=True)[:120]}")
+
+    # ── 日付っぽいテキストを含む要素を探す ──
+    date_pattern = re.compile(r"\d{4}[/\-年]\d{1,2}[/\-月]\d{1,2}")
+    date_elements = [el for el in soup.find_all(string=date_pattern)]
+    print(f"[DEBUG] 日付含む要素数: {len(date_elements)}")
+    for el in date_elements[:20]:
+        print(f"  {str(el).strip()[:100]}")
+
     return assignments
 
 
@@ -358,12 +204,13 @@ def send_line_message(text: str) -> bool:
 # 設定値の検証
 # ─────────────────────────────────────
 def validate_config() -> None:
-    missing = []
-    if not MOODLE_URL:      missing.append("MOODLE_URL")
-    if not MOODLE_USERNAME: missing.append("MOODLE_USERNAME")
-    if not MOODLE_PASSWORD: missing.append("MOODLE_PASSWORD")
-    if not LINE_TOKEN:      missing.append("LINE_CHANNEL_ACCESS_TOKEN")
-    if not LINE_USER_ID:    missing.append("LINE_USER_ID")
+    missing = [k for k, v in [
+        ("MOODLE_URL",               MOODLE_URL),
+        ("MOODLE_USERNAME",          MOODLE_USERNAME),
+        ("MOODLE_PASSWORD",          MOODLE_PASSWORD),
+        ("LINE_CHANNEL_ACCESS_TOKEN", LINE_TOKEN),
+        ("LINE_USER_ID",             LINE_USER_ID),
+    ] if not v]
     if missing:
         print(f"[ERROR] 環境変数が未設定: {', '.join(missing)}", file=sys.stderr)
         sys.exit(1)
@@ -378,10 +225,10 @@ def main() -> None:
     today = datetime.now(tz=JST).date()
     print(f"[{today}] 課題チェック開始 | 通知タイミング: {NOTIFY_DAYS} 日前")
 
-    session, sesskey, userid = login_moodle_session()
-    print("✅ Moodle ログイン成功")
+    session, sid = login_session()
+    print("✅ KU-LMS ログイン成功")
 
-    all_assignments = get_assignments(session, sesskey, userid)
+    all_assignments = get_assignments(session, sid)
     print(f"✅ 取得した課題数: {len(all_assignments)} 件")
 
     to_notify = []

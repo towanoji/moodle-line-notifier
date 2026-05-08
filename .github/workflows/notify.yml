@@ -29,9 +29,6 @@ jobs:
       - name: 依存ライブラリのインストール
         run: pip install -r requirements.txt
 
-      - name: Playwright ブラウザのインストール
-        run: playwright install chromium --with-deps
-
       - name: 課題締切通知スクリプトを実行
         env:
           MOODLE_URL:                  ${{ secrets.MOODLE_URL }}
