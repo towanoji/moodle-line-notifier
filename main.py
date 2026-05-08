@@ -65,89 +65,92 @@ def login_moodle_session() -> tuple[requests.Session, str, str]:
         page.goto(f"{MOODLE_URL}/", timeout=60_000, wait_until="networkidle")
         print(f"[INFO] リダイレクト先: {page.url}")
 
-        # ── 2. ページ内容とフレーム構成をデバッグ出力 ──
-        import time
-        time.sleep(3)  # JS描画の追加待機
+        # ── 2. JSでDOM要素を調査 ──
+        page.wait_for_timeout(5_000)  # JS描画を十分待つ
         print(f"[DEBUG] ページタイトル: {page.title()}")
-        print(f"[DEBUG] フレーム数: {len(page.frames)}")
-        for i, fr in enumerate(page.frames):
-            print(f"[DEBUG] frame[{i}] url={fr.url}")
 
-        # ── 3. フォームを探す（メインページ or iframe）──
-        login_frame = None
+        # JS経由でinput要素を全列挙
+        inputs_info = page.evaluate("""() => {
+            return Array.from(document.querySelectorAll('input')).map(el => ({
+                type: el.type, name: el.name, id: el.id,
+                className: el.className.substring(0,50),
+                placeholder: el.placeholder,
+                visible: el.offsetParent !== null
+            }));
+        }""")
+        print(f"[DEBUG] input要素: {json.dumps(inputs_info, ensure_ascii=False)}")
 
-        # まずメインページを確認
-        if page.locator("input[type='password']").count() > 0:
-            login_frame = page
-            print("[INFO] メインページにフォーム検出")
+        # JS経由でform要素を全列挙
+        forms_info = page.evaluate("""() => {
+            return Array.from(document.querySelectorAll('form')).map(f => ({
+                name: f.name, id: f.id, action: f.action,
+                html: f.innerHTML.substring(0, 300)
+            }));
+        }""")
+        print(f"[DEBUG] form要素: {json.dumps(forms_info, ensure_ascii=False)}")
+
+        # すでにMoodleにいる場合はスキップ
+        if "M.cfg" in page.content():
+            print("[INFO] すでにMoodleにログイン済み")
+        elif not inputs_info:
+            # フォームが一切ない場合はHTMLを出力して失敗
+            print(f"[DEBUG] HTML(先頭3000字): {page.content()[:3000]}")
+            browser.close()
+            raise RuntimeError(f"ログインフォームが見つかりません (URL: {page.url})")
         else:
-            # iframeの中を検索
-            for fr in page.frames:
-                if fr == page.main_frame:
-                    continue
-                try:
-                    fr.wait_for_selector("input[type='password']", timeout=5_000)
-                    login_frame = fr
-                    print(f"[INFO] iframe内にフォーム検出: {fr.url}")
-                    break
-                except PwTimeout:
-                    continue
-
-        if login_frame is None:
-            # デバッグ用にHTML一部出力
-            body_html = page.content()
-            print(f"[DEBUG] HTML抜粋(先頭2000字): {body_html[:2000]}")
-            # すでにMoodleにいる場合はそのまま続行
-            if "M.cfg" not in page.content():
-                browser.close()
-                raise RuntimeError(
-                    f"ログインフォームが見つかりません (URL: {page.url})"
-                )
-        else:
-            # ── 4. ユーザー名を入力 ──
-            for sel in [
-                "input[name*='loginId']",
-                "input[name*='login_id']",
-                "input[name='username']",
-                "input[name='j_username']",
+            # ── 3. ユーザー名フィールドを探して入力 ──
+            user_selectors = [
+                "input[name*='loginId']", "input[name*='login_id']",
+                "input[name*='userId']", "input[name*='user_id']",
+                "input[name='username']", "input[name='j_username']",
                 "input[type='text']",
-            ]:
+            ]
+            for sel in user_selectors:
                 try:
-                    if login_frame.locator(sel).count() > 0:
-                        login_frame.fill(sel, MOODLE_USERNAME, timeout=3_000)
+                    if page.locator(sel).count() > 0:
+                        page.fill(sel, MOODLE_USERNAME, timeout=3_000)
                         print(f"[INFO] ユーザー名入力: {sel}")
                         break
                 except PwTimeout:
                     continue
 
-            # ── 5. パスワードを入力 ──
-            login_frame.fill("input[type='password']", MOODLE_PASSWORD)
-            print("[INFO] パスワード入力完了")
+            # ── 4. パスワードを入力 ──
+            pw_selectors = [
+                "input[type='password']",
+                "input[name*='password']", "input[name*='passwd']",
+            ]
+            for sel in pw_selectors:
+                try:
+                    if page.locator(sel).count() > 0:
+                        page.fill(sel, MOODLE_PASSWORD, timeout=3_000)
+                        print(f"[INFO] パスワード入力: {sel}")
+                        break
+                except PwTimeout:
+                    continue
 
-            # ── 6. ログインボタンをクリック ──
+            # ── 5. ログインボタンをクリック ──
             for sel in [
-                "input[type='submit']",
-                "button[type='submit']",
-                "button:has-text('ログイン')",
-                "button:has-text('Login')",
-                "button:has-text('サインイン')",
+                "input[type='submit']", "button[type='submit']",
+                "button:has-text('ログイン')", "button:has-text('Login')",
+                "button:has-text('サインイン')", "button:has-text('sign in')",
+                "a:has-text('ログイン')",
             ]:
                 try:
-                    if login_frame.locator(sel).count() > 0:
-                        login_frame.click(sel, timeout=3_000)
+                    if page.locator(sel).count() > 0:
+                        page.click(sel, timeout=3_000)
                         print(f"[INFO] ログインボタンクリック: {sel}")
                         break
                 except PwTimeout:
                     continue
 
-            # ── 7. ページ遷移を待つ（UPからMoodleへのリダイレクトを含む）──
+            # ── 6. ページ遷移を待つ ──
             try:
                 page.wait_for_load_state("networkidle", timeout=30_000)
                 print(f"[INFO] ログイン後URL: {page.url}")
             except PwTimeout:
                 print(f"[WARN] ページ遷移待ちタイムアウト (URL: {page.url})")
 
-            # ── 7b. MoodleのURLにまだいない場合はダッシュボードへ移動 ──
+            # ── 6b. MoodleのURLにいない場合はダッシュボードへ ──
             if "M.cfg" not in page.content():
                 print(f"[INFO] Moodleダッシュボードへ移動中...")
                 page.goto(f"{MOODLE_URL}/my/", timeout=30_000, wait_until="networkidle")
