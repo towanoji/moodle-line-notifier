@@ -97,34 +97,54 @@ def login_moodle_session() -> tuple[requests.Session, str, str]:
 
     moodle_host = urlparse(MOODLE_URL).netloc
 
-    USER_KEYS = ["username", "loginid", "j_username", "login_id"]
-    PASS_KEYS = ["password", "j_password", "passwd"]
+    # ユーザー名・パスワードフィールド名のパターン（部分一致）
+    USER_PATS = ["username", "loginid", "login_id", "j_username", "loginid", "userid"]
+    PASS_PATS = ["password", "j_password", "passwd"]
 
-    # ── STEP 1: ログインページを取得（SSO リダイレクトに追従）──
-    resp = session.get(f"{MOODLE_URL}/login/index.php", allow_redirects=True, timeout=30)
-    soup = BeautifulSoup(resp.text, "html.parser")
+    def _is_login_form(fields: dict) -> bool:
+        """username/password フィールドを含む本物のログインフォームか判定"""
+        has_user = any(
+            any(up in k.lower() for up in USER_PATS) and "token" not in k.lower()
+            for k in fields
+        )
+        has_pass = any(any(pp in k.lower() for pp in PASS_PATS) for k in fields)
+        return has_user and has_pass
+
+    # ── STEP 1: ログインページを取得（複数パスを試行）──
+    # /login/index.php が 404 になる大学もあるため /my/ から試みる
+    resp = None
+    for start_path in ["/my/", "/", "/login/index.php"]:
+        r = session.get(f"{MOODLE_URL}{start_path}", allow_redirects=True, timeout=30)
+        soup = BeautifulSoup(r.text, "html.parser")
+        _, fields_check = _get_form_fields(soup)
+        print(f"[INFO] 開始URL試行: {r.url}")
+        if _is_login_form(fields_check):
+            resp = r
+            break
+        # ログインフォームがなくてもリダイレクト先がMoodle外ならそこから続行
+        if urlparse(r.url).netloc != moodle_host:
+            resp = r
+            break
+        resp = r  # 最後のものを使う
+
     print(f"[INFO] ログインページ URL: {resp.url}")
 
-    # ── STEP 2: フォームを最大5段階追従 ──
-    for step in range(5):
+    # ── STEP 2: フォームを最大6段階追従 ──
+    for step in range(6):
         action, fields = _get_form_fields(soup)
         if not action:
+            print(f"[INFO] Step{step+1}: フォームなし → 終了")
             break
 
         if not action.startswith("http"):
             action = urljoin(resp.url, action)
 
-        # ログインフォームかどうか判定（user/pass フィールドがあるか）
-        has_user = any(k for k in fields if any(uk == k.lower() for uk in USER_KEYS))
-        has_pass = any(k for k in fields if any(pk in k.lower() for pk in PASS_KEYS))
-
-        if has_user or has_pass:
-            # ログインフォーム → 認証情報を入力
+        if _is_login_form(fields):
             fields = _fill_credentials(fields)
             print(f"[INFO] Step{step+1}: ログインフォームに送信 → {action}")
         else:
-            # SAML/CAS リレーフォーム → そのまま送信（書き換えない）
             print(f"[INFO] Step{step+1}: 中継フォームを通過 → {action}")
+            print(f"[INFO]   フィールド: {list(fields.keys())}")
 
         resp = session.post(action, data=fields, allow_redirects=True, timeout=30)
         soup = BeautifulSoup(resp.text, "html.parser")
