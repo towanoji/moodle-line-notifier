@@ -59,9 +59,10 @@ def login_moodle_session() -> tuple[requests.Session, str, str]:
         )
         page = ctx.new_page()
 
-        # ── 1. Moodle のダッシュボードへアクセス → SSO にリダイレクト ──
+        # ── 1. Moodle ルートへアクセス → SSO にリダイレクト ──
+        # /my/ は notFound になるためルート(/)からアクセスする
         print(f"[INFO] Moodle にアクセス中...")
-        page.goto(f"{MOODLE_URL}/my/", timeout=60_000)
+        page.goto(f"{MOODLE_URL}/", timeout=60_000, wait_until="networkidle")
         print(f"[INFO] リダイレクト先: {page.url}")
 
         # ── 2. パスワード入力欄が現れるまで待つ（最大20秒）──
@@ -114,15 +115,18 @@ def login_moodle_session() -> tuple[requests.Session, str, str]:
                 except PwTimeout:
                     continue
 
-            # ── 6. Moodle ダッシュボードへの遷移を待つ ──
+            # ── 6. ページ遷移を待つ（UPからMoodleへのリダイレクトを含む）──
             try:
-                page.wait_for_function(
-                    "() => typeof M !== 'undefined' && typeof M.cfg !== 'undefined'",
-                    timeout=30_000,
-                )
-                print(f"[INFO] ログイン成功: {page.url}")
+                page.wait_for_load_state("networkidle", timeout=30_000)
+                print(f"[INFO] ログイン後URL: {page.url}")
             except PwTimeout:
-                print(f"[WARN] Moodle への遷移待ちタイムアウト (URL: {page.url})")
+                print(f"[WARN] ページ遷移待ちタイムアウト (URL: {page.url})")
+
+            # ── 6b. MoodleのURLにまだいない場合はダッシュボードへ移動 ──
+            if "M.cfg" not in page.content():
+                print(f"[INFO] Moodleダッシュボードへ移動中...")
+                page.goto(f"{MOODLE_URL}/my/", timeout=30_000, wait_until="networkidle")
+                print(f"[INFO] ダッシュボードURL: {page.url}")
 
         # ── 7. sesskey / userid を取得 ──
         content = page.content()
