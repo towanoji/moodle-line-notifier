@@ -1,0 +1,13 @@
+# 環境変数ファイル（絶対にコミットしないこと）
+.env
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+.venv/
+venv/
+
+# OS
+.DS_Store
+Thumbs.db
