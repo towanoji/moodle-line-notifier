@@ -114,45 +114,28 @@ def login_moodle_session() -> tuple[requests.Session, str, str]:
             except PwTimeout:
                 print("[WARN] 通常ログインリンクのクリックに失敗")
 
-            # ── 4. Playwrightのfill()でinputに値をセット（イベント発火あり）──
+            # ── 4. backClick()がフォームを更新するのを待つ ──
+            try:
+                page.wait_for_function(
+                    "() => { const f=document.getElementById('loginForm'); return f && f.action && f.action.includes('/login'); }",
+                    timeout=10_000,
+                )
+                print("[INFO] フォームアクション更新確認")
+            except PwTimeout:
+                print("[WARN] フォームアクション更新タイムアウト")
+
+            # lginFlagの値を確認
+            lgin_flag = page.evaluate("() => document.querySelector('#loginForm input[name=\"lginFlag\"]')?.value")
+            print(f"[DEBUG] lginFlag値: {lgin_flag}")
+
+            # ── 5. Playwrightのfill()で入力（イベント発火あり）──
             page.wait_for_selector("input[name='userId']", state="visible", timeout=10_000)
             page.fill("input[name='userId']", MOODLE_USERNAME)
             page.fill("input[name='password']", MOODLE_PASSWORD)
             print("[INFO] フォーム入力完了")
 
-            # ── 4b. loginForm内のボタンを列挙してデバッグ ──
-            form_buttons = page.evaluate("""() => {
-                const form = document.getElementById('loginForm');
-                if (!form) return [];
-                return Array.from(form.querySelectorAll('button, input[type="submit"]')).map(b => ({
-                    type: b.type, tag: b.tagName, text: b.textContent.trim().substring(0,30),
-                    className: b.className.substring(0,50), visible: b.offsetParent !== null
-                }));
-            }""")
-            print(f"[DEBUG] loginFormボタン: {json.dumps(form_buttons, ensure_ascii=False)}")
-
-            # ── 5. ボタンをクリック（Playwrightのクリック→イベント正常発火）──
-            submit_done = False
-            for sel in [
-                "#loginForm button[type='submit']",
-                "#loginForm input[type='submit']",
-                "#loginForm button.lms-btn",
-                "#loginForm button:visible",
-            ]:
-                try:
-                    loc = page.locator(sel)
-                    if loc.count() > 0:
-                        loc.first.click(timeout=5_000)
-                        print(f"[INFO] ボタンクリック: {sel}")
-                        submit_done = True
-                        break
-                except Exception:
-                    continue
-
-            if not submit_done:
-                # フォールバック: Enterキーで送信
-                page.locator("input[name='password']").press("Enter")
-                print("[INFO] Enterキーで送信")
+            # ── 6. form.submit()で送信（backClick()後はこれが有効だった）──
+            page.evaluate("() => { const f=document.getElementById('loginForm'); if(f) f.submit(); }")
 
             # ── 7. ページ遷移を待つ（SPA二次ロードも考慮して長めに）──
             try:
@@ -171,7 +154,29 @@ def login_moodle_session() -> tuple[requests.Session, str, str]:
                 except Exception:
                     page.wait_for_timeout(2_000)
 
-            # ── 7b. ログイン後ページを調査（SID抽出・リンク列挙）──
+            # ── 7b. ログイン失敗判定とエラーメッセージ取得 ──
+            login_succeeded = "/lginLgir/index" in page.url or "/lginTpic" in page.url
+            print(f"[INFO] ログイン結果: {'成功' if login_succeeded else '失敗'} (URL: {page.url})")
+
+            if not login_succeeded:
+                # エラーメッセージを探す
+                err_msgs = page.evaluate("""() => {
+                    const sels = ['[class*="error"]','[class*="alert"]','[class*="warn"]',
+                                  '.lms-login-error','.lms-message','.message','p.error'];
+                    const results = [];
+                    for (const sel of sels) {
+                        document.querySelectorAll(sel).forEach(el => {
+                            const t = el.textContent.trim();
+                            if (t) results.push({sel, text: t.substring(0,100)});
+                        });
+                    }
+                    return results;
+                }""")
+                print(f"[DEBUG] エラーメッセージ: {json.dumps(err_msgs, ensure_ascii=False)}")
+                # ログインフォームのHTML（エラー内容確認）
+                login_html = page.evaluate("() => document.getElementById('loginForm')?.innerHTML?.substring(0,600) ?? ''")
+                print(f"[DEBUG] loginForm HTML: {login_html}")
+
             if "M.cfg" not in content:
                 # SIDをURLから抽出
                 sid_match = re.search(r';SID=([^#?/]+)', page.url)
