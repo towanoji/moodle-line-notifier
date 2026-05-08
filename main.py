@@ -177,11 +177,27 @@ def login_moodle_session() -> tuple[requests.Session, str, str]:
             except PwTimeout:
                 print(f"[WARN] ページ遷移待ちタイムアウト (URL: {page.url})")
 
-            # ── 7b. MoodleのURLにいない場合はダッシュボードへ ──
+            # ── 7b. MoodleのURLをいろいろ試す ──
             if "M.cfg" not in page.content():
-                print(f"[INFO] Moodleダッシュボードへ移動中...")
-                page.goto(f"{MOODLE_URL}/my/", timeout=30_000, wait_until="networkidle")
-                print(f"[INFO] ダッシュボードURL: {page.url}")
+                # ログイン後ページの内容をデバッグ出力
+                print(f"[DEBUG] ログイン後HTML(先頭1500字): {page.content()[:1500]}")
+
+                # 試すMoodleパス一覧
+                found_moodle = False
+                for try_path in ["/lms/my/", "/my/", "/lms/", "/moodle/my/", "/moodle/"]:
+                    try_url = f"{MOODLE_URL}{try_path}"
+                    try:
+                        page.goto(try_url, timeout=15_000, wait_until="networkidle")
+                        if "M.cfg" in page.content():
+                            print(f"[INFO] Moodle発見: {page.url}")
+                            found_moodle = True
+                            break
+                        print(f"[DEBUG] {try_path} → M.cfg なし (最終URL: {page.url})")
+                    except Exception as e:
+                        print(f"[DEBUG] {try_path} → 例外: {e}")
+
+                if not found_moodle:
+                    print(f"[DEBUG] 最終ページHTML(先頭1500字): {page.content()[:1500]}")
 
         # ── 7. sesskey / userid を取得 ──
         content = page.content()
