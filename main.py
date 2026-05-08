@@ -92,29 +92,49 @@ def login_moodle_session() -> tuple[requests.Session, str, str]:
         # すでにMoodleにいる場合はスキップ
         if "M.cfg" in page.content():
             print("[INFO] すでにMoodleにログイン済み")
-        elif not inputs_info:
-            # フォームが一切ない場合はHTMLを出力して失敗
-            print(f"[DEBUG] HTML(先頭3000字): {page.content()[:3000]}")
-            browser.close()
-            raise RuntimeError(f"ログインフォームが見つかりません (URL: {page.url})")
         else:
-            # ── 3. ユーザー名フィールドを探して入力 ──
+            # ── 3. GakuNinモードなら通常ログインに切り替え ──
+            # ページが「統合認証（GakuNin）」モードで表示されている場合、
+            # 「通常のログイン方法」リンクをクリックしてID/PWフォームを表示させる
+            try:
+                back_link = page.locator("a:has-text('通常のログイン方法')")
+                if back_link.count() > 0:
+                    print("[INFO] GakuNinモード検出 → 通常ログインに切り替え")
+                    back_link.click(timeout=5_000)
+                    page.wait_for_timeout(3_000)  # JS描画を待つ
+
+                    # 切り替え後のinput要素を再確認
+                    inputs_info2 = page.evaluate("""() => {
+                        return Array.from(document.querySelectorAll('input:not([type="hidden"])')).map(el => ({
+                            type: el.type, name: el.name, id: el.id,
+                            visible: el.offsetParent !== null
+                        }));
+                    }""")
+                    print(f"[DEBUG] 切り替え後input: {json.dumps(inputs_info2, ensure_ascii=False)}")
+            except PwTimeout:
+                print("[WARN] 通常ログインリンクのクリックに失敗")
+
+            # ── 4. ユーザー名フィールドを探して入力 ──
             user_selectors = [
                 "input[name*='loginId']", "input[name*='login_id']",
-                "input[name*='userId']", "input[name*='user_id']",
+                "input[name*='userId']",  "input[name*='user_id']",
                 "input[name='username']", "input[name='j_username']",
-                "input[type='text']",
+                "input[type='text']:visible",
             ]
+            filled_user = False
             for sel in user_selectors:
                 try:
                     if page.locator(sel).count() > 0:
                         page.fill(sel, MOODLE_USERNAME, timeout=3_000)
                         print(f"[INFO] ユーザー名入力: {sel}")
+                        filled_user = True
                         break
                 except PwTimeout:
                     continue
+            if not filled_user:
+                print("[WARN] ユーザー名フィールドが見つかりませんでした")
 
-            # ── 4. パスワードを入力 ──
+            # ── 5. パスワードを入力 ──
             pw_selectors = [
                 "input[type='password']",
                 "input[name*='password']", "input[name*='passwd']",
@@ -128,29 +148,36 @@ def login_moodle_session() -> tuple[requests.Session, str, str]:
                 except PwTimeout:
                     continue
 
-            # ── 5. ログインボタンをクリック ──
+            # ── 6. ログインボタンをクリック ──
+            # GakuNinフォームのボタンではなくlginLgirActionFormのボタンを使う
+            login_clicked = False
             for sel in [
+                "#loginForm button[type='submit']",
+                "#loginForm input[type='submit']",
+                "form[name='lginLgirActionForm']:not(#gakuninLoginForm) button",
                 "input[type='submit']", "button[type='submit']",
-                "button:has-text('ログイン')", "button:has-text('Login')",
-                "button:has-text('サインイン')", "button:has-text('sign in')",
-                "a:has-text('ログイン')",
+                "button:has-text('ログイン')",
             ]:
                 try:
-                    if page.locator(sel).count() > 0:
-                        page.click(sel, timeout=3_000)
+                    loc = page.locator(sel)
+                    if loc.count() > 0:
+                        loc.first.click(timeout=3_000)
                         print(f"[INFO] ログインボタンクリック: {sel}")
+                        login_clicked = True
                         break
                 except PwTimeout:
                     continue
+            if not login_clicked:
+                print("[WARN] ログインボタンが見つかりませんでした")
 
-            # ── 6. ページ遷移を待つ ──
+            # ── 7. ページ遷移を待つ ──
             try:
                 page.wait_for_load_state("networkidle", timeout=30_000)
                 print(f"[INFO] ログイン後URL: {page.url}")
             except PwTimeout:
                 print(f"[WARN] ページ遷移待ちタイムアウト (URL: {page.url})")
 
-            # ── 6b. MoodleのURLにいない場合はダッシュボードへ ──
+            # ── 7b. MoodleのURLにいない場合はダッシュボードへ ──
             if "M.cfg" not in page.content():
                 print(f"[INFO] Moodleダッシュボードへ移動中...")
                 page.goto(f"{MOODLE_URL}/my/", timeout=30_000, wait_until="networkidle")
