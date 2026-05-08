@@ -114,61 +114,33 @@ def login_moodle_session() -> tuple[requests.Session, str, str]:
             except PwTimeout:
                 print("[WARN] 通常ログインリンクのクリックに失敗")
 
-            # ── 4. ユーザー名フィールドを探して入力 ──
-            user_selectors = [
-                "input[name*='loginId']", "input[name*='login_id']",
-                "input[name*='userId']",  "input[name*='user_id']",
-                "input[name='username']", "input[name='j_username']",
-                "input[type='text']:visible",
-            ]
-            filled_user = False
-            for sel in user_selectors:
-                try:
-                    if page.locator(sel).count() > 0:
-                        page.fill(sel, MOODLE_USERNAME, timeout=3_000)
-                        print(f"[INFO] ユーザー名入力: {sel}")
-                        filled_user = True
-                        break
-                except PwTimeout:
-                    continue
-            if not filled_user:
-                print("[WARN] ユーザー名フィールドが見つかりませんでした")
+            # ── 4. JSでフォーム特定・入力・送信 ──
+            # backClick()後にuserIdが属するフォームを特定してから送信する
+            form_info = page.evaluate("""() => {
+                const el = document.querySelector('input[name="userId"]');
+                if (!el) return null;
+                const f = el.closest('form');
+                return f ? {name: f.name, id: f.id, action: f.action,
+                            html: f.innerHTML.substring(0, 400)} : null;
+            }""")
+            print(f"[DEBUG] userId所属フォーム: {json.dumps(form_info, ensure_ascii=False)}")
 
-            # ── 5. パスワードを入力 ──
-            pw_selectors = [
-                "input[type='password']",
-                "input[name*='password']", "input[name*='passwd']",
-            ]
-            for sel in pw_selectors:
-                try:
-                    if page.locator(sel).count() > 0:
-                        page.fill(sel, MOODLE_PASSWORD, timeout=3_000)
-                        print(f"[INFO] パスワード入力: {sel}")
-                        break
-                except PwTimeout:
-                    continue
-
-            # ── 6. ログインボタンをクリック ──
-            # GakuNinフォームのボタンではなくlginLgirActionFormのボタンを使う
-            login_clicked = False
-            for sel in [
-                "#loginForm button[type='submit']",
-                "#loginForm input[type='submit']",
-                "form[name='lginLgirActionForm']:not(#gakuninLoginForm) button",
-                "input[type='submit']", "button[type='submit']",
-                "button:has-text('ログイン')",
-            ]:
-                try:
-                    loc = page.locator(sel)
-                    if loc.count() > 0:
-                        loc.first.click(timeout=3_000)
-                        print(f"[INFO] ログインボタンクリック: {sel}")
-                        login_clicked = True
-                        break
-                except PwTimeout:
-                    continue
-            if not login_clicked:
-                print("[WARN] ログインボタンが見つかりませんでした")
+            # JSで値をセットしてフォームをsubmit
+            submitted = page.evaluate(
+                """([user, pw]) => {
+                    const userEl = document.querySelector('input[name="userId"]');
+                    const pwEl   = document.querySelector('input[name="password"]');
+                    if (!userEl || !pwEl) return 'no_fields';
+                    userEl.value = user;
+                    pwEl.value   = pw;
+                    const form = userEl.closest('form');
+                    if (!form) return 'no_form';
+                    form.submit();
+                    return 'submitted';
+                }""",
+                [MOODLE_USERNAME, MOODLE_PASSWORD],
+            )
+            print(f"[INFO] フォーム送信結果: {submitted}")
 
             # ── 7. ページ遷移を待つ ──
             try:
