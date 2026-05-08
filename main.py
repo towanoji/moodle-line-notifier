@@ -114,33 +114,45 @@ def login_moodle_session() -> tuple[requests.Session, str, str]:
             except PwTimeout:
                 print("[WARN] 通常ログインリンクのクリックに失敗")
 
-            # ── 4. JSでフォーム特定・入力・送信 ──
-            # backClick()後にuserIdが属するフォームを特定してから送信する
-            form_info = page.evaluate("""() => {
-                const el = document.querySelector('input[name="userId"]');
-                if (!el) return null;
-                const f = el.closest('form');
-                return f ? {name: f.name, id: f.id, action: f.action,
-                            html: f.innerHTML.substring(0, 400)} : null;
-            }""")
-            print(f"[DEBUG] userId所属フォーム: {json.dumps(form_info, ensure_ascii=False)}")
+            # ── 4. Playwrightのfill()でinputに値をセット（イベント発火あり）──
+            page.wait_for_selector("input[name='userId']", state="visible", timeout=10_000)
+            page.fill("input[name='userId']", MOODLE_USERNAME)
+            page.fill("input[name='password']", MOODLE_PASSWORD)
+            print("[INFO] フォーム入力完了")
 
-            # JSで値をセットしてフォームをsubmit
-            submitted = page.evaluate(
-                """([user, pw]) => {
-                    const userEl = document.querySelector('input[name="userId"]');
-                    const pwEl   = document.querySelector('input[name="password"]');
-                    if (!userEl || !pwEl) return 'no_fields';
-                    userEl.value = user;
-                    pwEl.value   = pw;
-                    const form = userEl.closest('form');
-                    if (!form) return 'no_form';
-                    form.submit();
-                    return 'submitted';
-                }""",
-                [MOODLE_USERNAME, MOODLE_PASSWORD],
-            )
-            print(f"[INFO] フォーム送信結果: {submitted}")
+            # ── 4b. loginForm内のボタンを列挙してデバッグ ──
+            form_buttons = page.evaluate("""() => {
+                const form = document.getElementById('loginForm');
+                if (!form) return [];
+                return Array.from(form.querySelectorAll('button, input[type="submit"]')).map(b => ({
+                    type: b.type, tag: b.tagName, text: b.textContent.trim().substring(0,30),
+                    className: b.className.substring(0,50), visible: b.offsetParent !== null
+                }));
+            }""")
+            print(f"[DEBUG] loginFormボタン: {json.dumps(form_buttons, ensure_ascii=False)}")
+
+            # ── 5. ボタンをクリック（Playwrightのクリック→イベント正常発火）──
+            submit_done = False
+            for sel in [
+                "#loginForm button[type='submit']",
+                "#loginForm input[type='submit']",
+                "#loginForm button.lms-btn",
+                "#loginForm button:visible",
+            ]:
+                try:
+                    loc = page.locator(sel)
+                    if loc.count() > 0:
+                        loc.first.click(timeout=5_000)
+                        print(f"[INFO] ボタンクリック: {sel}")
+                        submit_done = True
+                        break
+                except Exception:
+                    continue
+
+            if not submit_done:
+                # フォールバック: Enterキーで送信
+                page.locator("input[name='password']").press("Enter")
+                print("[INFO] Enterキーで送信")
 
             # ── 7. ページ遷移を待つ（SPA二次ロードも考慮して長めに）──
             try:
