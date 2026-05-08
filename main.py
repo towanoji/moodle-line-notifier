@@ -142,15 +142,25 @@ def login_moodle_session() -> tuple[requests.Session, str, str]:
             )
             print(f"[INFO] フォーム送信結果: {submitted}")
 
-            # ── 7. ページ遷移を待つ ──
+            # ── 7. ページ遷移を待つ（SPA二次ロードも考慮して長めに）──
             try:
                 page.wait_for_load_state("networkidle", timeout=30_000)
-                print(f"[INFO] ログイン後URL: {page.url}")
             except PwTimeout:
-                print(f"[WARN] ページ遷移待ちタイムアウト (URL: {page.url})")
+                pass
+            page.wait_for_timeout(4_000)  # ハッシュルーティングの再描画を待つ
+            print(f"[INFO] ログイン後URL: {page.url}")
+
+            # page.content()はナビゲーション中に呼ぶとエラーになるのでリトライ
+            content = ""
+            for _attempt in range(5):
+                try:
+                    content = page.content()
+                    break
+                except Exception:
+                    page.wait_for_timeout(2_000)
 
             # ── 7b. ログイン後ページを調査（SID抽出・リンク列挙）──
-            if "M.cfg" not in page.content():
+            if "M.cfg" not in content:
                 # SIDをURLから抽出
                 sid_match = re.search(r';SID=([^#?/]+)', page.url)
                 sid = sid_match.group(1) if sid_match else ""
@@ -175,8 +185,16 @@ def login_moodle_session() -> tuple[requests.Session, str, str]:
                     topics_url = f"{MOODLE_URL}/lginTpic/;SID={sid}"
                     try:
                         page.goto(topics_url, timeout=15_000, wait_until="networkidle")
+                        page.wait_for_timeout(3_000)
                         print(f"[DEBUG] トピックページURL: {page.url}")
-                        print(f"[DEBUG] トピックHTML(先頭3000字): {page.content()[:3000]}")
+                        topic_html = ""
+                        for _a in range(3):
+                            try:
+                                topic_html = page.content()
+                                break
+                            except Exception:
+                                page.wait_for_timeout(2_000)
+                        print(f"[DEBUG] トピックHTML(先頭3000字): {topic_html[:3000]}")
                     except Exception as e:
                         print(f"[DEBUG] lginTpic移動エラー: {e}")
 
@@ -184,7 +202,14 @@ def login_moodle_session() -> tuple[requests.Session, str, str]:
                 print(f"[DEBUG] キャプチャAPIリクエスト: {captured[:30]}")
 
         # ── 7. sesskey / userid を取得 ──
-        content = page.content()
+        # ナビゲーション中のpage.content()エラーを防ぐためリトライ
+        content = ""
+        for _a in range(5):
+            try:
+                content = page.content()
+                break
+            except Exception:
+                page.wait_for_timeout(2_000)
         sesskey_m = re.search(r'"sesskey"\s*:\s*"([^"]+)"', content)
         userid_m  = re.search(r'"userid"\s*:\s*(\d+)',      content)
 
