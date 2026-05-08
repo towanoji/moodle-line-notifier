@@ -14,7 +14,7 @@ on:
 jobs:
   notify:
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 15
 
     steps:
       - name: リポジトリをチェックアウト
@@ -29,6 +29,9 @@ jobs:
       - name: 依存ライブラリのインストール
         run: pip install -r requirements.txt
 
+      - name: Playwright ブラウザのインストール
+        run: playwright install chromium --with-deps
+
       - name: 課題締切通知スクリプトを実行
         env:
           MOODLE_URL:                  ${{ secrets.MOODLE_URL }}
@@ -37,5 +40,4 @@ jobs:
           LINE_CHANNEL_ACCESS_TOKEN:   ${{ secrets.LINE_CHANNEL_ACCESS_TOKEN }}
           LINE_USER_ID:                ${{ secrets.LINE_USER_ID }}
           NOTIFY_DAYS_BEFORE:          ${{ secrets.NOTIFY_DAYS_BEFORE }}
-          MOODLE_DEBUG:                ${{ secrets.MOODLE_DEBUG }}
         run: python main.py

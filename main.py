@@ -2,8 +2,8 @@
 """
 工学院大学 Moodle 課題締切 LINE通知ツール
 =========================================
-Moodle へのウェブログイン（SSO対応）後、AJAX API で課題の締切を取得し、
-LINE Messaging API でプッシュ通知を送ります。
+Playwright で SSO（UNIVERSAL PASSPORT）認証を行い、
+Moodle AJAX API で課題の締切を取得して LINE 通知します。
 
 GitHub Actions の cron で毎朝自動実行することを想定しています。
 """
@@ -13,8 +13,6 @@ import re
 import sys
 import json
 import requests
-from bs4 import BeautifulSoup
-from urllib.parse import urljoin, urlparse
 from datetime import datetime, timedelta, timezone
 
 # ─────────────────────────────────────
@@ -24,10 +22,9 @@ MOODLE_URL      = os.environ.get("MOODLE_URL", "").rstrip("/")
 MOODLE_USERNAME = os.environ.get("MOODLE_USERNAME", "")
 MOODLE_PASSWORD = os.environ.get("MOODLE_PASSWORD", "")
 
-LINE_TOKEN      = os.environ.get("LINE_CHANNEL_ACCESS_TOKEN", "")
-LINE_USER_ID    = os.environ.get("LINE_USER_ID", "")
+LINE_TOKEN   = os.environ.get("LINE_CHANNEL_ACCESS_TOKEN", "")
+LINE_USER_ID = os.environ.get("LINE_USER_ID", "")
 
-# 何日前に通知するか（カンマ区切りで複数指定可: "1,3,7"）
 NOTIFY_DAYS = [
     int(d.strip())
     for d in os.environ.get("NOTIFY_DAYS_BEFORE", "1").split(",")
@@ -36,142 +33,123 @@ NOTIFY_DAYS = [
 
 JST = timezone(timedelta(hours=9))
 
-HEADERS = {
-    "User-Agent": (
-        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-        "AppleWebKit/537.36 (KHTML, like Gecko) "
-        "Chrome/120.0.0.0 Safari/537.36"
-    )
-}
-
 
 # ─────────────────────────────────────
-# Moodle ウェブログイン（SSO対応）
+# Playwright ログイン（SSO 対応）
 # ─────────────────────────────────────
-def _get_form_fields(soup: BeautifulSoup) -> tuple[str, dict]:
-    """フォームのaction URLと入力フィールド辞書を返す"""
-    form = soup.find("form")
-    if not form:
-        return "", {}
-
-    action = form.get("action", "")
-    fields = {}
-    for inp in form.find_all("input"):
-        name = inp.get("name")
-        if name and inp.get("type", "").lower() != "submit":
-            fields[name] = inp.get("value", "")
-
-    return action, fields
-
-
-def _fill_credentials(fields: dict) -> dict:
-    """フォームのどのフィールドがID/パスワードか推測して埋める"""
-    filled = dict(fields)
-
-    # ユーザー名フィールドを探す（優先度順）
-    user_keys = ["username", "loginid", "j_username", "login", "userid", "id", "user"]
-    for key in list(filled.keys()):
-        if any(uk in key.lower() for uk in user_keys):
-            filled[key] = MOODLE_USERNAME
-            break
-
-    # パスワードフィールドを探す
-    pass_keys = ["password", "j_password", "pass", "passwd"]
-    for key in list(filled.keys()):
-        if any(pk in key.lower() for pk in pass_keys):
-            filled[key] = MOODLE_PASSWORD
-            break
-
-    return filled
-
-
 def login_moodle_session() -> tuple[requests.Session, str, str]:
     """
-    Moodle にウェブログインし (session, sesskey, userid) を返す。
-    UNIVERSAL PASSPORT 等の SSO に対応。
+    Playwright でブラウザを操作して SSO ログインし、
+    (requests.Session, sesskey, userid) を返す。
     """
-    session = requests.Session()
-    session.headers.update(HEADERS)
-    moodle_host = urlparse(MOODLE_URL).netloc
+    from playwright.sync_api import sync_playwright, TimeoutError as PwTimeout
 
-    def _all_inputs(soup: BeautifulSoup, form=None) -> dict:
-        """フォーム（またはページ全体）の input を name または id で収集"""
-        source = form if form else soup
-        fields = {}
-        for inp in source.find_all("input"):
-            t = inp.get("type", "text").lower()
-            if t in ("submit", "button", "image", "reset"):
-                continue
-            name = inp.get("name") or inp.get("id")
-            if name:
-                fields[name] = inp.get("value", "")
-        return fields
-
-    # ── STEP 1: /my/ にアクセスして SSO リダイレクトを発生させる ──
-    resp = session.get(f"{MOODLE_URL}/my/", allow_redirects=True, timeout=30)
-    print(f"[INFO] 初回リダイレクト先: {resp.url}")
-
-    # ── STEP 2: ログイン完了まで最大8ステップ追従 ──
-    for step in range(8):
-        soup = BeautifulSoup(resp.text, "html.parser")
-
-        # 成功判定
-        if "M.cfg" in resp.text and urlparse(resp.url).netloc == moodle_host:
-            print("[INFO] Moodle ダッシュボードに到達しました")
-            break
-
-        # ページ上のフォーム・パスワード入力を調査
-        all_forms  = soup.find_all("form")
-        pass_fields = soup.find_all("input", {"type": "password"})
-        print(f"[INFO] Step{step+1} URL: {resp.url}")
-        print(f"[INFO]   フォーム数={len(all_forms)}, passwordフィールド数={len(pass_fields)}")
-
-        if pass_fields:
-            # ── パスワード入力あり → ログインフォームを送信 ──
-            pw = pass_fields[0]
-            form = pw.find_parent("form") or (all_forms[0] if all_forms else None)
-            action = (form.get("action", "") if form else "") or str(resp.url)
-            if not action.startswith("http"):
-                action = urljoin(str(resp.url), action)
-
-            fields = _all_inputs(soup, form)
-            fields = _fill_credentials(fields)
-            print(f"[INFO]   ログインフォーム送信 → {action}")
-            print(f"[INFO]   フィールド名: {[k for k in fields if 'pass' not in k.lower()]}")
-            resp = session.post(action, data=fields, allow_redirects=True, timeout=30)
-
-        elif all_forms:
-            # ── フォームはあるがパスワード入力なし → 中継フォームとして通過 ──
-            form = all_forms[0]
-            action = form.get("action", "") or str(resp.url)
-            if not action.startswith("http"):
-                action = urljoin(str(resp.url), action)
-            fields = _all_inputs(soup, form)
-            print(f"[INFO]   中継フォーム ({len(fields)} fields) → {action}")
-            resp = session.post(action, data=fields, allow_redirects=True, timeout=30)
-
-        else:
-            print(f"[INFO]   フォームなし → 終了")
-            break
-
-        print(f"[INFO]   → 遷移先: {resp.url}")
-
-    # ── STEP 3: ログイン成功確認 ──
-    if "M.cfg" not in resp.text:
-        soup = BeautifulSoup(resp.text, "html.parser")
-        title = soup.find("title")
-        raise RuntimeError(
-            f"Moodle ログイン失敗（最終URL: {resp.url} / ページ: {title.text.strip() if title else 'N/A'}）\n"
-            "MOODLE_USERNAME / MOODLE_PASSWORD を確認してください。"
+    with sync_playwright() as p:
+        browser = p.chromium.launch(
+            headless=True,
+            args=["--no-sandbox", "--disable-dev-shm-usage"],
         )
+        ctx = browser.new_context(
+            user_agent=(
+                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                "AppleWebKit/537.36 (KHTML, like Gecko) "
+                "Chrome/120.0.0.0 Safari/537.36"
+            ),
+            ignore_https_errors=True,
+        )
+        page = ctx.new_page()
 
-    # ── STEP 4: sesskey と userid を抽出 ──
-    sesskey_m = re.search(r'"sesskey"\s*:\s*"([^"]+)"', resp.text)
-    userid_m  = re.search(r'"userid"\s*:\s*(\d+)',      resp.text)
-    if not sesskey_m:
-        raise RuntimeError("sesskey の取得に失敗しました。")
+        # ── 1. Moodle のダッシュボードへアクセス → SSO にリダイレクト ──
+        print(f"[INFO] Moodle にアクセス中...")
+        page.goto(f"{MOODLE_URL}/my/", timeout=60_000)
+        print(f"[INFO] リダイレクト先: {page.url}")
 
-    return session, sesskey_m.group(1), userid_m.group(1) if userid_m else None
+        # ── 2. パスワード入力欄が現れるまで待つ（最大20秒）──
+        try:
+            page.wait_for_selector("input[type='password']", timeout=20_000)
+            print("[INFO] ログインフォーム検出")
+        except PwTimeout:
+            print(f"[WARN] パスワード欄が見つかりません。現在URL: {page.url}")
+            # すでに Moodle にいる場合はそのまま続行
+            if "M.cfg" not in page.content():
+                browser.close()
+                raise RuntimeError(
+                    f"ログインフォームが表示されませんでした (URL: {page.url})"
+                )
+
+        # ── 3. ユーザー名を入力（フィールド名をいくつか試す）──
+        if page.locator("input[type='password']").count() > 0:
+            for sel in [
+                "input[name*='loginId']",
+                "input[name*='login_id']",
+                "input[name='username']",
+                "input[name='j_username']",
+                "input[type='text']:visible",
+            ]:
+                try:
+                    if page.locator(sel).count() > 0:
+                        page.fill(sel, MOODLE_USERNAME, timeout=3_000)
+                        print(f"[INFO] ユーザー名入力: {sel}")
+                        break
+                except PwTimeout:
+                    continue
+
+            # ── 4. パスワードを入力 ──
+            page.fill("input[type='password']", MOODLE_PASSWORD)
+            print("[INFO] パスワード入力完了")
+
+            # ── 5. ログインボタンをクリック ──
+            for sel in [
+                "input[type='submit']",
+                "button[type='submit']",
+                "button:has-text('ログイン')",
+                "button:has-text('Login')",
+                "button:has-text('サインイン')",
+            ]:
+                try:
+                    if page.locator(sel).count() > 0:
+                        page.click(sel, timeout=3_000)
+                        print(f"[INFO] ログインボタンクリック: {sel}")
+                        break
+                except PwTimeout:
+                    continue
+
+            # ── 6. Moodle ダッシュボードへの遷移を待つ ──
+            try:
+                page.wait_for_function(
+                    "() => typeof M !== 'undefined' && typeof M.cfg !== 'undefined'",
+                    timeout=30_000,
+                )
+                print(f"[INFO] ログイン成功: {page.url}")
+            except PwTimeout:
+                print(f"[WARN] Moodle への遷移待ちタイムアウト (URL: {page.url})")
+
+        # ── 7. sesskey / userid を取得 ──
+        content = page.content()
+        sesskey_m = re.search(r'"sesskey"\s*:\s*"([^"]+)"', content)
+        userid_m  = re.search(r'"userid"\s*:\s*(\d+)',      content)
+
+        if not sesskey_m:
+            browser.close()
+            raise RuntimeError(
+                f"sesskey が取得できません。ログインに失敗した可能性があります (URL: {page.url})"
+            )
+
+        sesskey = sesskey_m.group(1)
+        userid  = userid_m.group(1) if userid_m else None
+
+        # ── 8. ブラウザのクッキーを requests.Session に移植 ──
+        session = requests.Session()
+        session.headers["User-Agent"] = (
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+            "AppleWebKit/537.36 Chrome/120.0.0.0 Safari/537.36"
+        )
+        for ck in ctx.cookies():
+            session.cookies.set(ck["name"], ck["value"])
+
+        browser.close()
+        print(f"[INFO] 認証完了 (userid={userid})")
+        return session, sesskey, userid
 
 
 # ─────────────────────────────────────
@@ -200,14 +178,11 @@ def _ajax_call(session: requests.Session, sesskey: str,
 
 def get_assignments(session: requests.Session, sesskey: str, userid: str) -> list[dict]:
     """履修中の全コースから締切付き課題を取得する"""
-
-    # ① 履修コース一覧
     courses = _ajax_call(session, sesskey, "core_enrol_get_users_courses",
                          {"userid": int(userid)})
     if not courses:
         return []
 
-    # ② 全コースの課題を一括取得
     course_ids = [c["id"] for c in courses]
     result = _ajax_call(session, sesskey, "mod_assign_get_assignments",
                         {"courseids": course_ids, "capabilities": []})
@@ -218,11 +193,10 @@ def get_assignments(session: requests.Session, sesskey: str, userid: str) -> lis
             due_ts = assign.get("duedate", 0)
             if due_ts and due_ts > 0:
                 assignments.append({
-                    "course":   course["fullname"],
-                    "name":     assign["name"],
-                    "duedate":  datetime.fromtimestamp(due_ts, tz=JST),
+                    "course":  course["fullname"],
+                    "name":    assign["name"],
+                    "duedate": datetime.fromtimestamp(due_ts, tz=JST),
                 })
-
     return assignments
 
 
@@ -230,17 +204,13 @@ def get_assignments(session: requests.Session, sesskey: str, userid: str) -> lis
 # LINE Messaging API
 # ─────────────────────────────────────
 def send_line_message(text: str) -> bool:
-    """LINE Messaging API でプッシュメッセージを送信する"""
     resp = requests.post(
         "https://api.line.me/v2/bot/message/push",
         headers={
             "Content-Type": "application/json",
             "Authorization": f"Bearer {LINE_TOKEN}",
         },
-        json={
-            "to": LINE_USER_ID,
-            "messages": [{"type": "text", "text": text}],
-        },
+        json={"to": LINE_USER_ID, "messages": [{"type": "text", "text": text}]},
         timeout=30,
     )
     if resp.status_code != 200:
@@ -259,9 +229,8 @@ def validate_config() -> None:
     if not MOODLE_PASSWORD: missing.append("MOODLE_PASSWORD")
     if not LINE_TOKEN:      missing.append("LINE_CHANNEL_ACCESS_TOKEN")
     if not LINE_USER_ID:    missing.append("LINE_USER_ID")
-
     if missing:
-        print(f"[ERROR] 以下の環境変数が設定されていません: {', '.join(missing)}", file=sys.stderr)
+        print(f"[ERROR] 環境変数が未設定: {', '.join(missing)}", file=sys.stderr)
         sys.exit(1)
 
 
@@ -274,15 +243,12 @@ def main() -> None:
     today = datetime.now(tz=JST).date()
     print(f"[{today}] 課題チェック開始 | 通知タイミング: {NOTIFY_DAYS} 日前")
 
-    # 1. Moodle にウェブログイン
     session, sesskey, userid = login_moodle_session()
     print("✅ Moodle ログイン成功")
 
-    # 2. 全課題を取得
     all_assignments = get_assignments(session, sesskey, userid)
     print(f"✅ 取得した課題数: {len(all_assignments)} 件")
 
-    # 3. 通知対象（締切まで指定日数の課題）を抽出
     to_notify = []
     for a in all_assignments:
         days_left = (a["duedate"].date() - today).days
@@ -293,9 +259,7 @@ def main() -> None:
         print("📭 通知対象の課題はありませんでした")
         return
 
-    # 4. メッセージを組み立てて送信
     to_notify.sort(key=lambda x: x["duedate"])
-
     lines = [f"📢 課題の締切通知 [{today.strftime('%Y/%m/%d')}]"]
     for a in to_notify:
         if a["days_left"] == 0:
@@ -304,7 +268,6 @@ def main() -> None:
             timing = "🔴 明日締切"
         else:
             timing = f"🟡 あと {a['days_left']} 日"
-
         lines.append(
             f"\n━━━━━━━━━━\n"
             f"📘 {a['course']}\n"
@@ -312,9 +275,7 @@ def main() -> None:
             f"⏰ {a['duedate'].strftime('%m/%d(%a) %H:%M')} {timing}"
         )
 
-    message = "\n".join(lines)
-
-    if send_line_message(message):
+    if send_line_message("\n".join(lines)):
         print(f"✅ LINE通知送信完了（{len(to_notify)} 件）")
     else:
         sys.exit(1)
