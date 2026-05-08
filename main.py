@@ -2,15 +2,19 @@
 """
 工学院大学 Moodle 課題締切 LINE通知ツール
 =========================================
-Moodle Web Service API で課題の締切を取得し、
+Moodle へのウェブログイン（SSO対応）後、AJAX API で課題の締切を取得し、
 LINE Messaging API でプッシュ通知を送ります。
 
 GitHub Actions の cron で毎朝自動実行することを想定しています。
 """
 
 import os
+import re
 import sys
+import json
 import requests
+from bs4 import BeautifulSoup
+from urllib.parse import urljoin, urlparse
 from datetime import datetime, timedelta, timezone
 
 # ─────────────────────────────────────
@@ -32,75 +36,145 @@ NOTIFY_DAYS = [
 
 JST = timezone(timedelta(hours=9))
 
-
-# ─────────────────────────────────────
-# Moodle API
-# ─────────────────────────────────────
-def _moodle_post(token: str, function: str, extra: dict | None = None) -> dict | list:
-    """Moodle Web Service REST API を呼び出す共通関数"""
-    payload = {
-        "wstoken": token,
-        "wsfunction": function,
-        "moodlewsrestformat": "json",
-    }
-    if extra:
-        payload.update(extra)
-
-    resp = requests.post(
-        f"{MOODLE_URL}/webservice/rest/server.php",
-        data=payload,
-        timeout=30,
+HEADERS = {
+    "User-Agent": (
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+        "AppleWebKit/537.36 (KHTML, like Gecko) "
+        "Chrome/120.0.0.0 Safari/537.36"
     )
-    resp.raise_for_status()
-    data = resp.json()
+}
 
-    # エラーレスポンスの検出
-    if isinstance(data, dict) and "exception" in data:
+
+# ─────────────────────────────────────
+# Moodle ウェブログイン（SSO対応）
+# ─────────────────────────────────────
+def _get_form_fields(soup: BeautifulSoup) -> tuple[str, dict]:
+    """フォームのaction URLと入力フィールド辞書を返す"""
+    form = soup.find("form")
+    if not form:
+        return "", {}
+
+    action = form.get("action", "")
+    fields = {}
+    for inp in form.find_all("input"):
+        name = inp.get("name")
+        if name and inp.get("type", "").lower() != "submit":
+            fields[name] = inp.get("value", "")
+
+    return action, fields
+
+
+def _fill_credentials(fields: dict) -> dict:
+    """フォームのどのフィールドがID/パスワードか推測して埋める"""
+    filled = dict(fields)
+
+    # ユーザー名フィールドを探す（優先度順）
+    user_keys = ["username", "loginid", "j_username", "login", "userid", "id", "user"]
+    for key in list(filled.keys()):
+        if any(uk in key.lower() for uk in user_keys):
+            filled[key] = MOODLE_USERNAME
+            break
+
+    # パスワードフィールドを探す
+    pass_keys = ["password", "j_password", "pass", "passwd"]
+    for key in list(filled.keys()):
+        if any(pk in key.lower() for pk in pass_keys):
+            filled[key] = MOODLE_PASSWORD
+            break
+
+    return filled
+
+
+def login_moodle_session() -> tuple[requests.Session, str, str]:
+    """
+    Moodle にウェブログインし (session, sesskey, userid) を返す。
+
+    ① Moodle ネイティブログイン（/login/index.php）
+    ② SSO リダイレクト（UNIVERSAL PASSPORT 等）に自動対応
+    """
+    session = requests.Session()
+    session.headers.update(HEADERS)
+
+    moodle_host = urlparse(MOODLE_URL).netloc
+
+    # ── STEP 1: ログインページを取得（SSO リダイレクトに追従）──
+    resp = session.get(f"{MOODLE_URL}/login/index.php", allow_redirects=True, timeout=30)
+    soup = BeautifulSoup(resp.text, "html.parser")
+
+    # ── STEP 2: ログインフォームに認証情報を送信（最大3回リダイレクト対応）──
+    for _ in range(3):
+        action, fields = _get_form_fields(soup)
+        if not action:
+            break
+
+        # action が相対URLなら絶対URLに変換
+        if not action.startswith("http"):
+            action = urljoin(resp.url, action)
+
+        fields = _fill_credentials(fields)
+        resp = session.post(action, data=fields, allow_redirects=True, timeout=30)
+        soup = BeautifulSoup(resp.text, "html.parser")
+
+        # Moodle のダッシュボードに到達したか確認
+        if urlparse(resp.url).netloc == moodle_host and "M.cfg" in resp.text:
+            break
+
+    # ── STEP 3: ログイン成功確認 ──
+    if "M.cfg" not in resp.text:
         raise RuntimeError(
-            f"Moodle API エラー [{function}]: {data.get('message', data)}"
+            "Moodle ログイン失敗。MOODLE_USERNAME / MOODLE_PASSWORD を確認してください。"
         )
-    return data
+
+    # ── STEP 4: sesskey と userid を抽出 ──
+    sesskey_m = re.search(r'"sesskey"\s*:\s*"([^"]+)"', resp.text)
+    userid_m  = re.search(r'"userid"\s*:\s*(\d+)',      resp.text)
+
+    if not sesskey_m:
+        raise RuntimeError("sesskey の取得に失敗しました。")
+
+    sesskey = sesskey_m.group(1)
+    userid  = userid_m.group(1) if userid_m else None
+
+    return session, sesskey, userid
 
 
-def get_moodle_token() -> str:
-    """ユーザー名・パスワードでログインし、APIトークンを取得する"""
-    resp = requests.post(
-        f"{MOODLE_URL}/login/token.php",
-        data={
-            "username": MOODLE_USERNAME,
-            "password": MOODLE_PASSWORD,
-            "service": "moodle_mobile_app",
-        },
+# ─────────────────────────────────────
+# Moodle AJAX API
+# ─────────────────────────────────────
+def _ajax_call(session: requests.Session, sesskey: str,
+               methodname: str, args: dict) -> dict | list:
+    """Moodle の AJAX API エンドポイントを呼び出す"""
+    url = f"{MOODLE_URL}/lib/ajax/service.php?sesskey={sesskey}&info={methodname}"
+    resp = session.post(
+        url,
+        data=json.dumps([{"index": 0, "methodname": methodname, "args": args}]),
+        headers={"Content-Type": "application/json"},
         timeout=30,
     )
     resp.raise_for_status()
-    data = resp.json()
+    result = resp.json()
 
-    if "token" not in data:
-        error_msg = data.get("error", str(data))
-        raise RuntimeError(f"Moodle ログイン失敗: {error_msg}")
+    if not result:
+        raise RuntimeError(f"AJAX API 空レスポンス [{methodname}]")
+    if result[0].get("error"):
+        raise RuntimeError(f"AJAX API エラー [{methodname}]: {result[0]}")
 
-    return data["token"]
+    return result[0]["data"]
 
 
-def get_assignments(token: str) -> list[dict]:
+def get_assignments(session: requests.Session, sesskey: str, userid: str) -> list[dict]:
     """履修中の全コースから締切付き課題を取得する"""
-    # ① 自分のユーザーIDを取得
-    site_info = _moodle_post(token, "core_webservice_get_site_info")
-    user_id = site_info["userid"]
 
-    # ② 履修コース一覧を取得
-    courses = _moodle_post(
-        token,
-        "core_enrol_get_users_courses",
-        {"userid": user_id},
-    )
+    # ① 履修コース一覧
+    courses = _ajax_call(session, sesskey, "core_enrol_get_users_courses",
+                         {"userid": int(userid)})
     if not courses:
         return []
 
-    # ③ 全コースの課題を一括取得
-    extra = {f"courseids[{i}]": c["id"] for i, c in enumerate(courses)}
-    result = _moodle_post(token, "mod_assign_get_assignments", extra)
+    # ② 全コースの課題を一括取得
+    course_ids = [c["id"] for c in courses]
+    result = _ajax_call(session, sesskey, "mod_assign_get_assignments",
+                        {"courseids": course_ids, "capabilities": []})
 
     assignments = []
     for course in result.get("courses", []):
@@ -108,9 +182,9 @@ def get_assignments(token: str) -> list[dict]:
             due_ts = assign.get("duedate", 0)
             if due_ts and due_ts > 0:
                 assignments.append({
-                    "course": course["fullname"],
-                    "name":   assign["name"],
-                    "duedate": datetime.fromtimestamp(due_ts, tz=JST),
+                    "course":   course["fullname"],
+                    "name":     assign["name"],
+                    "duedate":  datetime.fromtimestamp(due_ts, tz=JST),
                 })
 
     return assignments
@@ -164,12 +238,12 @@ def main() -> None:
     today = datetime.now(tz=JST).date()
     print(f"[{today}] 課題チェック開始 | 通知タイミング: {NOTIFY_DAYS} 日前")
 
-    # 1. Moodle にログインしてトークン取得
-    token = get_moodle_token()
+    # 1. Moodle にウェブログイン
+    session, sesskey, userid = login_moodle_session()
     print("✅ Moodle ログイン成功")
 
     # 2. 全課題を取得
-    all_assignments = get_assignments(token)
+    all_assignments = get_assignments(session, sesskey, userid)
     print(f"✅ 取得した課題数: {len(all_assignments)} 件")
 
     # 3. 通知対象（締切まで指定日数の課題）を抽出
