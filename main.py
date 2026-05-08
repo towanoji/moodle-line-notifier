@@ -114,7 +114,18 @@ def login_moodle_session() -> tuple[requests.Session, str, str]:
             except PwTimeout:
                 print("[WARN] 通常ログインリンクのクリックに失敗")
 
-            # ── 4. backClick()がフォームを更新するのを待つ ──
+            # ── 4. POSTリクエストを傍受して送信データを確認 ──
+            captured_posts = []
+            def _log_req(route, request):
+                if request.method == "POST":
+                    captured_posts.append({
+                        "url": request.url,
+                        "body": request.post_data or "",
+                    })
+                route.continue_()
+            page.route("**/*", _log_req)
+
+            # ── 5. backClick()がフォームを更新するのを待つ ──
             try:
                 page.wait_for_function(
                     "() => { const f=document.getElementById('loginForm'); return f && f.action && f.action.includes('/login'); }",
@@ -128,14 +139,29 @@ def login_moodle_session() -> tuple[requests.Session, str, str]:
             lgin_flag = page.evaluate("() => document.querySelector('#loginForm input[name=\"lginFlag\"]')?.value")
             print(f"[DEBUG] lginFlag値: {lgin_flag}")
 
-            # ── 5. Playwrightのfill()で入力（イベント発火あり）──
+            # ── 6. JSで値をセットしてsubmit（成功実績ある方式）──
             page.wait_for_selector("input[name='userId']", state="visible", timeout=10_000)
-            page.fill("input[name='userId']", MOODLE_USERNAME)
-            page.fill("input[name='password']", MOODLE_PASSWORD)
-            print("[INFO] フォーム入力完了")
-
-            # ── 6. form.submit()で送信（backClick()後はこれが有効だった）──
-            page.evaluate("() => { const f=document.getElementById('loginForm'); if(f) f.submit(); }")
+            submit_result = page.evaluate(
+                """([user, pw]) => {
+                    const userEl = document.querySelector('#loginForm input[name="userId"]');
+                    const pwEl   = document.querySelector('#loginForm input[name="password"]');
+                    const form   = document.getElementById('loginForm');
+                    if (!userEl || !pwEl || !form) return 'missing';
+                    userEl.value = user;
+                    pwEl.value   = pw;
+                    // jQuery経由でも値をセット（jQuery管理の場合の保険）
+                    if (window.jQuery) {
+                        window.jQuery(userEl).val(user).trigger('change');
+                        window.jQuery(pwEl).val(pw).trigger('change');
+                    }
+                    // 値確認
+                    const check = userEl.value + '/' + pwEl.value.length + 'chars';
+                    form.submit();
+                    return check;
+                }""",
+                [MOODLE_USERNAME, MOODLE_PASSWORD],
+            )
+            print(f"[INFO] フォーム送信: {submit_result}")
 
             # ── 7. ページ遷移を待つ（SPA二次ロードも考慮して長めに）──
             try:
@@ -157,6 +183,14 @@ def login_moodle_session() -> tuple[requests.Session, str, str]:
             # ── 7b. ログイン失敗判定とエラーメッセージ取得 ──
             login_succeeded = "/lginLgir/index" in page.url or "/lginTpic" in page.url
             print(f"[INFO] ログイン結果: {'成功' if login_succeeded else '失敗'} (URL: {page.url})")
+
+            # POST送信データを確認（実際に何が送られたか）
+            # passwordは文字数のみ表示
+            for p in captured_posts:
+                body = p["body"]
+                # passwordの実値は隠す
+                body_safe = re.sub(r'(password=)[^&]+', r'\1***', body)
+                print(f"[DEBUG] POST送信: url={p['url'][-40:]} body={body_safe[:200]}")
 
             if not login_succeeded:
                 # エラーメッセージを探す
