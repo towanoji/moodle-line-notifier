@@ -177,27 +177,39 @@ def login_moodle_session() -> tuple[requests.Session, str, str]:
             except PwTimeout:
                 print(f"[WARN] ページ遷移待ちタイムアウト (URL: {page.url})")
 
-            # ── 7b. MoodleのURLをいろいろ試す ──
+            # ── 7b. ログイン後ページを調査（SID抽出・リンク列挙）──
             if "M.cfg" not in page.content():
-                # ログイン後ページの内容をデバッグ出力
-                print(f"[DEBUG] ログイン後HTML(先頭1500字): {page.content()[:1500]}")
+                # SIDをURLから抽出
+                sid_match = re.search(r';SID=([^#?/]+)', page.url)
+                sid = sid_match.group(1) if sid_match else ""
+                print(f"[DEBUG] SID: {sid[:10]}...")
 
-                # 試すMoodleパス一覧
-                found_moodle = False
-                for try_path in ["/lms/my/", "/my/", "/lms/", "/moodle/my/", "/moodle/"]:
-                    try_url = f"{MOODLE_URL}{try_path}"
+                # ページ内の全リンクを列挙
+                links = page.evaluate("""() => {
+                    return Array.from(document.querySelectorAll('a[href]')).map(a => ({
+                        text: a.textContent.trim().substring(0, 60),
+                        href: a.href
+                    })).filter(l => l.href && !l.href.startsWith('javascript'));
+                }""")
+                print(f"[DEBUG] ページ内リンク: {json.dumps(links[:40], ensure_ascii=False)}")
+
+                # ネットワークリクエストをキャプチャしながら/lginTpic/へ移動
+                captured = []
+                page.on("request", lambda r: captured.append(r.url)
+                        if any(k in r.url for k in ['json','ajax','api','assign','course','task','kadai'])
+                        else None)
+
+                if sid:
+                    topics_url = f"{MOODLE_URL}/lginTpic/;SID={sid}"
                     try:
-                        page.goto(try_url, timeout=15_000, wait_until="networkidle")
-                        if "M.cfg" in page.content():
-                            print(f"[INFO] Moodle発見: {page.url}")
-                            found_moodle = True
-                            break
-                        print(f"[DEBUG] {try_path} → M.cfg なし (最終URL: {page.url})")
+                        page.goto(topics_url, timeout=15_000, wait_until="networkidle")
+                        print(f"[DEBUG] トピックページURL: {page.url}")
+                        print(f"[DEBUG] トピックHTML(先頭3000字): {page.content()[:3000]}")
                     except Exception as e:
-                        print(f"[DEBUG] {try_path} → 例外: {e}")
+                        print(f"[DEBUG] lginTpic移動エラー: {e}")
 
-                if not found_moodle:
-                    print(f"[DEBUG] 最終ページHTML(先頭1500字): {page.content()[:1500]}")
+                page.wait_for_timeout(3_000)
+                print(f"[DEBUG] キャプチャAPIリクエスト: {captured[:30]}")
 
         # ── 7. sesskey / userid を取得 ──
         content = page.content()
