@@ -2,11 +2,12 @@ name: 課題締切 LINE通知
 
 on:
   # ─────────────────────────────────
-  # 毎朝 7:00 JST に自動実行
-  # JST = UTC+9 なので UTC では 22:00（前日）
+  # 毎朝 7:00 JST  → UTC 前日 22:00（日数ベース通知: 3日前・1日前）
+  # 毎日 12:00 JST → UTC 03:00    （時間ベース通知: 12時間前）
   # ─────────────────────────────────
   schedule:
-    - cron: '0 22 * * *'
+    - cron: '0 22 * * *'   # 7:00 JST
+    - cron: '0 3 * * *'    # 12:00 JST
 
   # GitHub の Actions タブから手動実行も可能
   workflow_dispatch:
@@ -37,4 +38,5 @@ jobs:
           LINE_CHANNEL_ACCESS_TOKEN:   ${{ secrets.LINE_CHANNEL_ACCESS_TOKEN }}
           LINE_USER_ID:                ${{ secrets.LINE_USER_ID }}
           NOTIFY_DAYS_BEFORE:          ${{ secrets.NOTIFY_DAYS_BEFORE }}
+          NOTIFY_HOURS_BEFORE:         ${{ secrets.NOTIFY_HOURS_BEFORE }}
         run: python main.py

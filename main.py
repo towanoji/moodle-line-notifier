@@ -28,8 +28,13 @@ LINE_USER_ID = os.environ.get("LINE_USER_ID", "")
 
 NOTIFY_DAYS = [
     int(d.strip())
-    for d in os.environ.get("NOTIFY_DAYS_BEFORE", "1").split(",")
+    for d in os.environ.get("NOTIFY_DAYS_BEFORE", "3,1").split(",")
     if d.strip().isdigit()
+]
+NOTIFY_HOURS = [
+    int(h.strip())
+    for h in os.environ.get("NOTIFY_HOURS_BEFORE", "12").split(",")
+    if h.strip().isdigit()
 ]
 
 JST = timezone(timedelta(hours=9))
@@ -480,8 +485,12 @@ def validate_config() -> None:
 def main() -> None:
     validate_config()
 
-    today = datetime.now(tz=JST).date()
-    print(f"[{today}] 課題チェック開始 | 通知タイミング: {NOTIFY_DAYS} 日前")
+    now   = datetime.now(tz=JST)
+    today = now.date()
+    print(
+        f"[{now.strftime('%Y/%m/%d %H:%M')} JST] 課題チェック開始 | "
+        f"通知: {NOTIFY_DAYS} 日前 / {NOTIFY_HOURS} 時間前"
+    )
 
     session, sid, lms_base, final_resp = login_session()
     print(f"✅ KU-LMS ログイン成功 → {final_resp.url[:80]}")
@@ -491,28 +500,47 @@ def main() -> None:
 
     to_notify = []
     for a in all_assignments:
-        days_left = (a["duedate"].date() - today).days
-        if days_left in NOTIFY_DAYS:
-            to_notify.append({**a, "days_left": days_left})
+        days_left  = (a["duedate"].date() - today).days
+        hours_left = (a["duedate"] - now).total_seconds() / 3600
+
+        timing_kind = None
+
+        # 時間ベースの通知（±1 時間の窓で判定）
+        for h in NOTIFY_HOURS:
+            if h - 1 <= hours_left < h + 1:
+                timing_kind = ("hours", h, hours_left)
+                break
+
+        # 日数ベースの通知（時間通知と重複しない場合のみ）
+        if timing_kind is None and days_left in NOTIFY_DAYS:
+            timing_kind = ("days", days_left, hours_left)
+
+        if timing_kind:
+            to_notify.append({**a, "days_left": days_left,
+                              "hours_left": hours_left, "timing": timing_kind})
 
     if not to_notify:
         print("📭 通知対象の課題はありませんでした")
         return
 
     to_notify.sort(key=lambda x: x["duedate"])
-    lines = [f"📢 課題の締切通知 [{today.strftime('%Y/%m/%d')}]"]
+    lines = [f"📢 課題の締切通知 [{now.strftime('%Y/%m/%d %H:%M')} JST]"]
     for a in to_notify:
-        if a["days_left"] == 0:
-            timing = "⚠️ 今日が締切！"
+        kind, val, hl = a["timing"]
+        if kind == "hours":
+            timing_str = f"⚠️ あと約 {int(hl)} 時間！"
+        elif a["days_left"] == 0:
+            timing_str = "⚠️ 今日が締切！"
         elif a["days_left"] == 1:
-            timing = "🔴 明日締切"
+            timing_str = "🔴 明日締切"
         else:
-            timing = f"🟡 あと {a['days_left']} 日"
+            timing_str = f"🟡 あと {a['days_left']} 日"
+
         lines.append(
             f"\n━━━━━━━━━━\n"
             f"📘 {a['course']}\n"
             f"📝 {a['name']}\n"
-            f"⏰ {a['duedate'].strftime('%m/%d(%a) %H:%M')} {timing}"
+            f"⏰ {a['duedate'].strftime('%m/%d(%a) %H:%M')} {timing_str}"
         )
 
     if send_line_message("\n".join(lines)):

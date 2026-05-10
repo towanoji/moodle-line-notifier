@@ -1,2 +1,11 @@
+# KU-LMS スクレイピング（GitHub Actions スクリプト・Webサービス共通）
 requests>=2.32.0
 beautifulsoup4>=4.12.0
+
+# Webサービス（Railway デプロイ用）
+fastapi>=0.111.0
+uvicorn[standard]>=0.29.0
+line-bot-sdk>=3.11.0
+apscheduler>=3.10.4
+cryptography>=42.0.0
+python-dotenv>=1.0.0
