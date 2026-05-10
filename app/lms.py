@@ -5,6 +5,7 @@ GakuNin SAML 統合認証フローを requests のみで実装。
 username / password を引数で受け取るので、複数ユーザーに対応。
 """
 
+import os
 import re
 import requests
 from bs4 import BeautifulSoup
@@ -13,8 +14,8 @@ from urllib.parse import urljoin
 
 JST = timezone(timedelta(hours=9))
 
-# 工学院大学 KU-LMS のベース URL（全ユーザー共通）
-KU_LMS_URL = "https://lms.kogakuin.ac.jp/lms"
+# 工学院大学 KU-LMS のベース URL（環境変数 MOODLE_URL から読み込み）
+KU_LMS_URL = os.environ.get("MOODLE_URL", "https://lms.kogakuin.ac.jp/lms").rstrip("/")
 
 
 # ─────────────────────────────────────
