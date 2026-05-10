@@ -128,25 +128,51 @@ def handle_message(event) -> None:
         # ログイン処理は別スレッドで行い、結果を push で送る
         def _try_login(uid: str, username: str, password: str) -> None:
             import sys
+            from datetime import datetime, timedelta, timezone
             from app.lms import login_session_for_user
+            from app.stripe_payment import create_checkout_url
+            JST = timezone(timedelta(hours=9))
             try:
                 print(f"[LOGIN] {username} のログイン試行開始", flush=True)
                 login_session_for_user(username, password)
                 # 成功
                 print(f"[LOGIN] {username} ログイン成功", flush=True)
-                user.username     = username
-                user.password_enc = encrypt(password)
+                user.username      = username
+                user.password_enc  = encrypt(password)
                 user.temp_username = ""
-                user.state        = "REGISTERED"
+                user.state         = "REGISTERED"
+                user.subscription_status = "trial"
+                user.trial_ends_at = datetime.now(tz=JST) + timedelta(days=14)
                 save_user(user)
-                push(uid,
-                     "✅ 登録完了！\n\n"
-                     "毎朝 7:00 と 12:00 に課題の締切を確認して\n"
-                     "📅 3日前・1日前・12時間前に通知します。\n\n"
-                     "━━━━━━━━━━\n"
-                     "使えるコマンド:\n"
-                     "「設定」→ 通知タイミングの確認・変更\n"
-                     "「解除」→ 登録を削除")
+
+                # Stripe 決済リンクを生成
+                try:
+                    checkout_url = create_checkout_url(uid)
+                except Exception as e:
+                    print(f"[STRIPE] Checkout URL 生成失敗: {e}", file=sys.stderr, flush=True)
+                    checkout_url = None
+
+                msg = (
+                    "✅ 登録完了！\n\n"
+                    "毎朝 7:00 と 12:00 に課題の締切を確認して\n"
+                    "📅 3日前・1日前・12時間前に通知します。\n\n"
+                    "━━━━━━━━━━\n"
+                    "🎁 14日間無料トライアル中！\n"
+                    "以降は月額200円で継続できます。\n\n"
+                )
+                if checkout_url:
+                    msg += (
+                        "💳 今すぐカードを登録しておくと\n"
+                        "トライアル終了後も自動で継続されます:\n"
+                        f"{checkout_url}\n\n"
+                    )
+                msg += (
+                    "━━━━━━━━━━\n"
+                    "使えるコマンド:\n"
+                    "「設定」→ 通知タイミングの確認・変更\n"
+                    "「解除」→ 登録を削除"
+                )
+                push(uid, msg)
             except Exception as e:
                 # 失敗（詳細ログ）
                 print(f"[LOGIN ERROR] {username}: {e}", file=sys.stderr, flush=True)
