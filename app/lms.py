@@ -80,7 +80,7 @@ def _login_gakunin(
         title = soup.find("title")
         title_text = title.string.strip() if title and title.string else "no-title"
         forms = soup.find_all("form")
-        form_info = [(f.get("action","")[:60], [i.get("name","") for i in f.find_all("input")]) for f in forms]
+        form_info = [(f.get("action","")[:40], {i.get("name",""): i.get("value","")[:30] for i in f.find_all("input") if i.get("name")}) for f in forms]
         meta = soup.find("meta", attrs={"http-equiv": re.compile(r"refresh", re.I)})
         print(f"[GakuNin Step{step+1}] {url[:100]} | title={title_text[:40]} | forms={form_info} | meta={bool(meta)}", flush=True)
 
