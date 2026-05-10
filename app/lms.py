@@ -74,9 +74,10 @@ def _login_gakunin(
         allow_redirects=True,
     )
 
-    for step in range(12):
+    for step in range(20):
         soup = BeautifulSoup(resp.text, "html.parser")
         url  = resp.url
+        print(f"[GakuNin Step{step+1}] {url[:120]} ({resp.status_code})", flush=True)
 
         # ─ LMS 本体に戻ってきたら成功 ─
         if (lms_base in url and
