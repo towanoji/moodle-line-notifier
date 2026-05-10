@@ -127,10 +127,13 @@ def handle_message(event) -> None:
 
         # ログイン処理は別スレッドで行い、結果を push で送る
         def _try_login(uid: str, username: str, password: str) -> None:
+            import sys
             from app.lms import login_session_for_user
             try:
+                print(f"[LOGIN] {username} のログイン試行開始", flush=True)
                 login_session_for_user(username, password)
                 # 成功
+                print(f"[LOGIN] {username} ログイン成功", flush=True)
                 user.username     = username
                 user.password_enc = encrypt(password)
                 user.temp_username = ""
@@ -144,8 +147,9 @@ def handle_message(event) -> None:
                      "使えるコマンド:\n"
                      "「設定」→ 通知タイミングの確認・変更\n"
                      "「解除」→ 登録を削除")
-            except Exception:
-                # 失敗
+            except Exception as e:
+                # 失敗（詳細ログ）
+                print(f"[LOGIN ERROR] {username}: {e}", file=sys.stderr, flush=True)
                 user.state = "WAITING_USERNAME"
                 user.temp_username = ""
                 save_user(user)
