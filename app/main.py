@@ -21,6 +21,8 @@ from app.scheduler import start_scheduler
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    from app.database import init_db
+    init_db()
     start_scheduler()
     yield
 
@@ -89,29 +91,26 @@ async def stripe_webhook(request: Request):
     # ── サブスクリプション停止 ──
     elif event["type"] == "customer.subscription.deleted":
         customer_id = event["data"]["object"].get("customer", "")
-        # customer_id からユーザーを検索
-        from app.models import _store
-        for user in _store.values():
-            if user.stripe_customer_id == customer_id:
-                user.subscription_status = "cancelled"
-                save_user(user)
-                push(user.line_user_id,
-                     "⚠️ サブスクリプションが停止されました。\n\n"
-                     "「サブスク」と送ると再登録できます。")
-                print(f"[STRIPE] {user.line_user_id} → cancelled", flush=True)
-                break
+        from app.models import get_user_by_stripe_customer, save_user
+        user = get_user_by_stripe_customer(customer_id)
+        if user:
+            user.subscription_status = "cancelled"
+            save_user(user)
+            push(user.line_user_id,
+                 "⚠️ サブスクリプションが停止されました。\n\n"
+                 "「サブスク」と送ると再登録できます。")
+            print(f"[STRIPE] {user.line_user_id} → cancelled", flush=True)
 
     # ── 支払い失敗 ──
     elif event["type"] == "invoice.payment_failed":
         customer_id = event["data"]["object"].get("customer", "")
-        from app.models import _store
-        for user in _store.values():
-            if user.stripe_customer_id == customer_id:
-                push(user.line_user_id,
-                     "❌ 支払いに失敗しました。\n\n"
-                     "カード情報をご確認ください。\n"
-                     "「サブスク」と送ると再登録できます。")
-                break
+        from app.models import get_user_by_stripe_customer
+        user = get_user_by_stripe_customer(customer_id)
+        if user:
+            push(user.line_user_id,
+                 "❌ 支払いに失敗しました。\n\n"
+                 "カード情報をご確認ください。\n"
+                 "「サブスク」と送ると再登録できます。")
 
     return {"status": "ok"}
 
