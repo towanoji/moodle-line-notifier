@@ -161,7 +161,7 @@ def handle_message(event) -> None:
                 user.temp_username = ""
                 user.state         = "REGISTERED"
                 user.subscription_status = "trial"
-                user.trial_ends_at = datetime.now(tz=JST) + timedelta(days=14)
+                user.trial_ends_at = datetime.now(tz=JST) + timedelta(days=30)
                 save_user(user)
 
                 # Stripe 決済リンクを生成
