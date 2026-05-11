@@ -1,4 +1,4 @@
-name: 課題締切 LINE通知
+name: 課題締切 LINE通知（全ユーザー）
 
 on:
   # ─────────────────────────────────
@@ -15,7 +15,7 @@ on:
 jobs:
   notify:
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 30
 
     steps:
       - name: リポジトリをチェックアウト
@@ -30,13 +30,10 @@ jobs:
       - name: 依存ライブラリのインストール
         run: pip install -r requirements.txt
 
-      - name: 課題締切通知スクリプトを実行
+      - name: 全ユーザーへ課題締切通知スクリプトを実行
         env:
+          DATABASE_URL:                ${{ secrets.DATABASE_URL }}
+          ENCRYPTION_KEY:              ${{ secrets.ENCRYPTION_KEY }}
           MOODLE_URL:                  ${{ secrets.MOODLE_URL }}
-          MOODLE_USERNAME:             ${{ secrets.MOODLE_USERNAME }}
-          MOODLE_PASSWORD:             ${{ secrets.MOODLE_PASSWORD }}
           LINE_CHANNEL_ACCESS_TOKEN:   ${{ secrets.LINE_CHANNEL_ACCESS_TOKEN }}
-          LINE_USER_ID:                ${{ secrets.LINE_USER_ID }}
-          NOTIFY_DAYS_BEFORE:          ${{ secrets.NOTIFY_DAYS_BEFORE }}
-          NOTIFY_HOURS_BEFORE:         ${{ secrets.NOTIFY_HOURS_BEFORE }}
-        run: python main.py
+        run: python notify_all.py

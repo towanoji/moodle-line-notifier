@@ -80,9 +80,12 @@ def _login_gakunin(
         title = soup.find("title")
         title_text = title.string.strip() if title and title.string else "no-title"
         forms = soup.find_all("form")
-        form_info = [(f.get("action","")[:40], {i.get("name",""): i.get("value","")[:30] for i in f.find_all("input") if i.get("name")}) for f in forms]
         meta = soup.find("meta", attrs={"http-equiv": re.compile(r"refresh", re.I)})
-        print(f"[GakuNin Step{step+1}] {url[:100]} | title={title_text[:40]} | forms={form_info} | meta={bool(meta)}", flush=True)
+        # エラーメッセージを抽出
+        error_els = soup.find_all(class_=re.compile(r"(error|alert|warn|msg|notice)", re.I))
+        errors = [e.get_text(" ", strip=True)[:80] for e in error_els if e.get_text(strip=True)]
+        body_text = soup.get_text(" ", strip=True)[:200]
+        print(f"[GakuNin Step{step+1}] {url[:80]} | errors={errors} | body={body_text}", flush=True)
 
         # ─ LMS 本体に戻ってきたら成功 ─
         if (lms_base in url and
