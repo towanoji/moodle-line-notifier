@@ -313,6 +313,100 @@ def get_assignments(
     return assignments
 
 
+# ─────────────────────────────────────
+# Moodle Web Services API（トークン認証）
+# ─────────────────────────────────────
+
+def verify_moodle_token(token: str, lms_url: str = KU_LMS_URL) -> dict:
+    """
+    Moodle REST API でトークンを検証してサイト情報を返す。
+    失敗時は ValueError を送出。
+    """
+    resp = requests.post(
+        f"{lms_url}/webservice/rest/server.php",
+        data={
+            "wstoken":            token,
+            "wsfunction":         "core_webservice_get_site_info",
+            "moodlewsrestformat": "json",
+        },
+        timeout=15,
+    )
+    resp.raise_for_status()
+    data = resp.json()
+    if isinstance(data, dict) and "exception" in data:
+        raise ValueError(data.get("message", "トークンが無効です"))
+    return data
+
+
+def get_assignments_by_token(token: str, lms_url: str = KU_LMS_URL) -> list[dict]:
+    """
+    Moodle REST API でログインユーザーの課題一覧を取得して返す。
+    各要素: {"course": str, "name": str, "duedate": datetime(JST)}
+    """
+    # ユーザー情報を取得
+    site_info = verify_moodle_token(token, lms_url)
+    user_id   = site_info.get("userid")
+    if not user_id:
+        raise ValueError("ユーザーIDを取得できませんでした")
+
+    # 受講コース一覧を取得
+    courses_resp = requests.post(
+        f"{lms_url}/webservice/rest/server.php",
+        data={
+            "wstoken":            token,
+            "wsfunction":         "core_enrol_get_users_courses",
+            "userid":             user_id,
+            "moodlewsrestformat": "json",
+        },
+        timeout=15,
+    )
+    courses = courses_resp.json()
+    if isinstance(courses, dict) and "exception" in courses:
+        raise ValueError(f"コース取得エラー: {courses.get('message', '')}")
+
+    course_ids = [c["id"] for c in courses]
+    if not course_ids:
+        return []
+
+    # 課題一覧を取得
+    params: dict = {
+        "wstoken":            token,
+        "wsfunction":         "mod_assign_get_assignments",
+        "moodlewsrestformat": "json",
+    }
+    for i, cid in enumerate(course_ids):
+        params[f"courseids[{i}]"] = cid
+
+    assign_resp = requests.post(
+        f"{lms_url}/webservice/rest/server.php",
+        data=params,
+        timeout=30,
+    )
+    assign_data = assign_resp.json()
+    if isinstance(assign_data, dict) and "exception" in assign_data:
+        raise ValueError(f"課題取得エラー: {assign_data.get('message', '')}")
+
+    assignments: list[dict] = []
+    now = datetime.now(tz=JST)
+
+    for course in assign_data.get("courses", []):
+        course_name = course.get("fullname", "不明")
+        for assign in course.get("assignments", []):
+            duedate_ts = assign.get("duedate", 0)
+            if duedate_ts == 0:
+                continue
+            duedate = datetime.fromtimestamp(duedate_ts, tz=JST)
+            if duedate < now:
+                continue
+            assignments.append({
+                "course":  course_name,
+                "name":    assign.get("name", "不明"),
+                "duedate": duedate,
+            })
+
+    return assignments
+
+
 def _extract_assignments(soup: BeautifulSoup, assignments: list[dict]) -> None:
     today = datetime.now(tz=JST).date()
     date_pat = re.compile(r"(\d{4})/(\d{1,2})/(\d{1,2})[^\d]+(\d{1,2}):(\d{2})")

@@ -77,20 +77,25 @@ def push(line_user_id: str, text: str) -> None:
 
 @handler.add(FollowEvent)
 def handle_follow(event) -> None:
-    """友達追加 → 学籍番号の入力を促す"""
+    """友達追加 → Moodle トークンの取得方法を案内"""
     user = get_or_create_user(event.source.user_id)
-    user.state = "WAITING_USERNAME"
+    user.state = "WAITING_TOKEN"
     save_user(user)
 
     reply(event.reply_token,
           "👋 KU-LMS 課題締切通知ボットへようこそ！\n\n"
-          "工学院大学の統合認証（GakuNin）の\n"
-          "📌 ユーザー名を入力してください。\n\n"
-          "例: ab123456\n\n"
+          "パスワードを預からない安全な方式で登録します。\n\n"
           "━━━━━━━━━━\n"
-          "⚠️ ご注意\n"
-          "入力したパスワードは暗号化してサーバーに保存されます。\n"
-          "KU-LMS へのログイン以外には使用しません。")
+          "📋 トークンの取得手順\n\n"
+          "① KU-LMSにブラウザでログイン\n"
+          "② 以下のURLを開く:\n"
+          "https://study.ns.kogakuin.ac.jp/lms/user/managetoken.php\n\n"
+          "③「トークンを作成する」をクリック\n"
+          "④ サービスを選択してトークンをコピー\n"
+          "⑤ コピーしたトークンをここに送信\n\n"
+          "━━━━━━━━━━\n"
+          "⚠️ トークンは暗号化して保存し、\n"
+          "課題取得以外には使用しません。")
 
 
 @handler.add(UnfollowEvent)
@@ -108,6 +113,78 @@ def handle_message(event) -> None:
     uid  = event.source.user_id
     text = event.message.text.strip()
     user = get_or_create_user(uid)
+
+    # ── トークン待ち ──
+    if user.state == "WAITING_TOKEN":
+        reply(event.reply_token, "⏳ トークンを確認中...\nしばらくお待ちください。")
+
+        def _try_token(uid: str, token: str) -> None:
+            import sys
+            from datetime import datetime, timedelta, timezone
+            from app.lms import verify_moodle_token
+            from app.stripe_payment import create_checkout_url, create_paypay_checkout_url
+            JST = timezone(timedelta(hours=9))
+            try:
+                site_info = verify_moodle_token(token)
+                username  = site_info.get("username", "")
+                fullname  = site_info.get("fullname", "")
+                print(f"[TOKEN] {username} ({fullname}) トークン認証成功", flush=True)
+
+                user.username     = username
+                user.password_enc = encrypt("TOKEN:" + token)
+                user.state        = "REGISTERED"
+                user.subscription_status = "trial"
+                user.trial_ends_at = datetime.now(tz=JST) + timedelta(days=30)
+                save_user(user)
+
+                try:
+                    checkout_url = create_checkout_url(uid)
+                except Exception as e:
+                    print(f"[STRIPE] Checkout URL 生成失敗: {e}", file=sys.stderr, flush=True)
+                    checkout_url = None
+                try:
+                    paypay_url = create_paypay_checkout_url(uid)
+                except Exception as e:
+                    print(f"[STRIPE] PayPay URL 生成失敗: {e}", file=sys.stderr, flush=True)
+                    paypay_url = None
+
+                msg = (
+                    f"✅ 登録完了！（{fullname}）\n\n"
+                    "毎朝 7:00 と 12:00 に課題の締切を確認して\n"
+                    "📅 3日前・1日前・12時間前に通知します。\n\n"
+                    "━━━━━━━━━━\n"
+                    "🎁 30日間無料トライアル中！\n"
+                    "以降は月額199円で継続できます。\n\n"
+                    "お支払い方法を選んでください:\n\n"
+                )
+                if checkout_url:
+                    msg += f"💳 クレジットカード（自動継続）:\n{checkout_url}\n\n"
+                if paypay_url:
+                    msg += f"💰 PayPay（手動月払い）:\n{paypay_url}\n\n"
+                msg += (
+                    "━━━━━━━━━━\n"
+                    "使えるコマンド:\n"
+                    "「設定」→ 通知タイミングの確認・変更\n"
+                    "「意見箱」→ ご意見・ご要望を送る\n"
+                    "「解除」→ 登録を削除"
+                )
+                push(uid, msg)
+
+            except Exception as e:
+                print(f"[TOKEN ERROR] {e}", file=sys.stderr, flush=True)
+                user.state = "WAITING_TOKEN"
+                save_user(user)
+                push(uid,
+                     "❌ トークンの確認に失敗しました。\n\n"
+                     "トークンが正しいか確認して\n"
+                     "再度送信してください。\n\n"
+                     "※ KU-LMSでWeb Servicesが\n"
+                     "利用できない場合はご連絡ください。")
+
+        import threading
+        t = threading.Thread(target=_try_token, args=(uid, text), daemon=True)
+        t.start()
+        return
 
     # ── 意見箱（フィードバック待ち）──
     if user.state == "WAITING_FEEDBACK":
@@ -275,8 +352,8 @@ def handle_message(event) -> None:
             save_user(user)
             reply(event.reply_token,
                   "✅ 登録を解除しました。\n\n"
-                  "再度登録するにはユーザー名を入力してください。\n"
-                  "例: ab123456")
+                  "再度登録するには「友だち追加」し直すか\n"
+                  "このトークルームにメッセージを送ってください。")
             return
 
         if text == "意見箱":
@@ -299,7 +376,12 @@ def handle_message(event) -> None:
               "「解除」→ 登録を削除")
         return
 
-    # NEW / 不明な状態
-    user.state = "WAITING_USERNAME"
+    # NEW / 不明な状態 → トークン登録へ誘導
+    user.state = "WAITING_TOKEN"
     save_user(user)
-    reply(event.reply_token, "📌 ユーザー名を入力してください。\n例: ab123456")
+    reply(event.reply_token,
+          "📋 登録するにはKU-LMSのトークンが必要です。\n\n"
+          "① KU-LMSにログイン\n"
+          "② 以下のURLを開く:\n"
+          "https://study.ns.kogakuin.ac.jp/lms/user/managetoken.php\n\n"
+          "③ トークンを作成してここに送信してください。")

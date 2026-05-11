@@ -64,18 +64,25 @@ def build_message(to_notify: list[dict], now: datetime) -> str:
 
 def process_user(user, now: datetime, today) -> None:
     from app.crypto import decrypt
-    from app.lms import login_session_for_user, get_assignments
+    from app.lms import login_session_for_user, get_assignments, get_assignments_by_token
 
     print(f"  [{user.username}] 処理開始", flush=True)
 
     try:
-        password = decrypt(user.password_enc)
-        session, sid, lms_base, final_resp = login_session_for_user(
-            user.username, password
-        )
-        assignments = get_assignments(session, sid, lms_base, start_resp=final_resp)
+        decrypted = decrypt(user.password_enc)
+
+        if decrypted.startswith("TOKEN:"):
+            # トークン認証方式（新方式）
+            token = decrypted[len("TOKEN:"):]
+            assignments = get_assignments_by_token(token)
+        else:
+            # パスワード認証方式（旧ユーザー互換）
+            session, sid, lms_base, final_resp = login_session_for_user(
+                user.username, decrypted
+            )
+            assignments = get_assignments(session, sid, lms_base, start_resp=final_resp)
     except Exception as e:
-        print(f"  [{user.username}] ログインエラー: {e}", file=sys.stderr, flush=True)
+        print(f"  [{user.username}] 取得エラー: {e}", file=sys.stderr, flush=True)
         return
 
     to_notify = []
