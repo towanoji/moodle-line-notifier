@@ -137,36 +137,71 @@ def _login_gakunin(
                 break
         else:
             # ─ ログインフォーム ─
+            # 全フォームのフィールド名をデバッグ出力
+            all_forms = soup.find_all("form")
+            print(f"[GakuNin Step{step+1}] フォーム数: {len(all_forms)}", flush=True)
+            for fi, f in enumerate(all_forms):
+                all_inputs = [(inp.get("name",""), inp.get("type","text"), inp.get("value","")[:20])
+                              for inp in f.find_all("input") if inp.get("name")]
+                print(f"  Form[{fi}] action={f.get('action','')} inputs={all_inputs}", flush=True)
+
             login_form = None
             for f in soup.find_all("form"):
                 data = {inp.get("name", ""): inp.get("value", "")
                         for inp in f.find_all("input") if inp.get("name")}
                 names_lower = {k.lower() for k in data}
                 pwd_like  = {"password", "passwd", "j_password", "pass"}
-                user_like = {"username", "j_username", "uid", "userid", "user"}
+                user_like = {"username", "j_username", "uid", "userid", "user",
+                             "loginid", "login_id", "id", "account", "mail",
+                             "email", "login", "name", "userid"}
+                # パスワードまたはユーザー名フィールドがあるフォームを探す
                 if names_lower & (pwd_like | user_like):
+                    login_form = (f, data)
+                    break
+                # フォールバック: テキスト入力が1つ以上あるフォーム
+                text_inputs = [inp for inp in f.find_all("input")
+                               if inp.get("type", "text") in ("text", "email")
+                               and inp.get("name")]
+                if text_inputs:
                     login_form = (f, data)
                     break
 
             if login_form:
                 f, data = login_form
-                user_like = {"username", "j_username", "uid", "userid", "user"}
+                user_like = {"username", "j_username", "uid", "userid", "user",
+                             "loginid", "login_id", "id", "account", "mail",
+                             "email", "login", "name"}
+                filled_user = False
                 for inp in f.find_all("input"):
                     if inp.get("name", "").lower() in user_like:
                         data[inp.get("name")] = username
+                        print(f"  → username field: {inp.get('name')} = {username}", flush=True)
+                        filled_user = True
                         break
-                else:
+                if not filled_user:
                     for inp in f.find_all("input"):
                         n = inp.get("name", "")
-                        if inp.get("type", "text") == "text" and n and n.lower() != "dummy":
+                        t = inp.get("type", "text")
+                        if t in ("text", "email") and n and n.lower() != "dummy":
                             data[n] = username
+                            print(f"  → fallback username field: {n} (type={t}) = {username}", flush=True)
+                            filled_user = True
                             break
+                if not filled_user:
+                    print(f"  → WARNING: usernameフィールドが見つかりません", flush=True)
+
+                filled_pass = False
                 for inp in f.find_all("input", type="password"):
                     data[inp.get("name")] = password
+                    print(f"  → password field: {inp.get('name')}", flush=True)
+                    filled_pass = True
                     break
+                if not filled_pass:
+                    print(f"  → passwordフィールドなし（2段階ログインの1段階目の可能性）", flush=True)
 
                 action = _abs_url(url, f.get("action", url))
                 method = f.get("method", "post").lower()
+                print(f"  → submit to {action} ({method}) data_keys={list(data.keys())}", flush=True)
                 if method == "get":
                     resp = s.get(action, params=data, timeout=30, allow_redirects=True)
                 else:
