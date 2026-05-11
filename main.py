@@ -14,7 +14,7 @@ import sys
 import requests
 from bs4 import BeautifulSoup
 from datetime import datetime, timedelta, timezone
-from urllib.parse import urljoin
+from urllib.parse import urljoin, urlparse
 
 # ─────────────────────────────────────
 # 設定（GitHub Secrets から読み込み）
@@ -69,6 +69,16 @@ def _abs_url(base: str, path: str) -> str:
     return urljoin(base, path)
 
 
+def _is_lms_url(url: str, lms_base: str) -> bool:
+    u, b = urlparse(url), urlparse(lms_base)
+    if u.scheme not in ("http", "https"):
+        return False
+    if (u.hostname, u.port) != (b.hostname, b.port):
+        return False
+    base_path = b.path.rstrip("/")
+    return u.path == base_path or u.path.startswith(base_path + "/")
+
+
 # ─────────────────────────────────────
 # GakuNin SAML ログイン
 # ─────────────────────────────────────
@@ -99,7 +109,7 @@ def _login_gakunin(
         print(f"[INFO] Step{step+1}: {url[:100]}")
 
         # ─ LMS 本体に戻ってきたら成功 ─
-        if (lms_base in url and
+        if (_is_lms_url(url, lms_base) and
                 "/lginLgir/" not in url and
                 "/error/" not in url):
             new_sid = _extract_sid(url) or sid
@@ -121,7 +131,7 @@ def _login_gakunin(
 
             # LMS へ戻るリンクを探す
             for _, href in links_on_page:
-                if lms_base in href and "/lginLgir/" not in href:
+                if _is_lms_url(href, lms_base) and "/lginLgir/" not in href:
                     print(f"[INFO] LMS リンク発見: {href}")
                     resp = s.get(href, timeout=30, allow_redirects=True)
                     break
