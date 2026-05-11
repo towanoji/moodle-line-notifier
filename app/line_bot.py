@@ -77,25 +77,30 @@ def push(line_user_id: str, text: str) -> None:
 
 @handler.add(FollowEvent)
 def handle_follow(event) -> None:
-    """友達追加 → Moodle トークンの取得方法を案内"""
+    """友達追加 → ユーザー名の入力を促す"""
     user = get_or_create_user(event.source.user_id)
-    user.state = "WAITING_TOKEN"
+    user.state = "WAITING_USERNAME"
     save_user(user)
 
     reply(event.reply_token,
           "👋 KU-LMS 課題締切通知ボットへようこそ！\n\n"
-          "パスワードを預からない安全な方式で登録します。\n\n"
+          "工学院大学の統合認証（GakuNin）の\n"
+          "📌 ユーザー名を入力してください。\n\n"
+          "例: ab123456\n\n"
           "━━━━━━━━━━\n"
-          "📋 トークンの取得手順\n\n"
-          "① KU-LMSにブラウザでログイン\n"
-          "② 以下のURLを開く:\n"
-          "https://study.ns.kogakuin.ac.jp/lms/user/managetoken.php\n\n"
-          "③「トークンを作成する」をクリック\n"
-          "④ サービスを選択してトークンをコピー\n"
-          "⑤ コピーしたトークンをここに送信\n\n"
+          "⚠️ セキュリティについて\n"
+          "入力したパスワードはAES-256で暗号化して\n"
+          "サーバーに保存されます。\n"
+          "KU-LMSへのログイン以外には使用しません。\n"
+          "「解除」でいつでも削除できます。\n\n"
           "━━━━━━━━━━\n"
-          "⚠️ トークンは暗号化して保存し、\n"
-          "課題取得以外には使用しません。")
+          "📄 各種規約:\n"
+          "利用規約:\n"
+          "https://towanoji.github.io/moodle-line-notifier/terms.html\n\n"
+          "プライバシーポリシー:\n"
+          "https://towanoji.github.io/moodle-line-notifier/privacy.html\n\n"
+          "特定商取引法に基づく表記:\n"
+          "https://towanoji.github.io/moodle-line-notifier/legal.html")
 
 
 @handler.add(UnfollowEvent)
@@ -376,12 +381,7 @@ def handle_message(event) -> None:
               "「解除」→ 登録を削除")
         return
 
-    # NEW / 不明な状態 → トークン登録へ誘導
-    user.state = "WAITING_TOKEN"
+    # NEW / 不明な状態
+    user.state = "WAITING_USERNAME"
     save_user(user)
-    reply(event.reply_token,
-          "📋 登録するにはKU-LMSのトークンが必要です。\n\n"
-          "① KU-LMSにログイン\n"
-          "② 以下のURLを開く:\n"
-          "https://study.ns.kogakuin.ac.jp/lms/user/managetoken.php\n\n"
-          "③ トークンを作成してここに送信してください。")
+    reply(event.reply_token, "📌 ユーザー名を入力してください。\n例: ab123456")
