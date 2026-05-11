@@ -310,6 +310,27 @@ def handle_message(event) -> None:
                   "（返信できない場合があります）")
             return
 
+        if text == "登録者数" and uid == DEVELOPER_LINE_USER_ID:
+            from app.database import get_session, UserRecord
+            with get_session() as s:
+                total      = s.query(UserRecord).count()
+                registered = s.query(UserRecord).filter(UserRecord.state == "REGISTERED").count()
+                trial      = s.query(UserRecord).filter(
+                    UserRecord.state == "REGISTERED",
+                    UserRecord.subscription_status == "trial"
+                ).count()
+                active     = s.query(UserRecord).filter(
+                    UserRecord.state == "REGISTERED",
+                    UserRecord.subscription_status == "active"
+                ).count()
+            reply(event.reply_token,
+                  f"📊 登録者数レポート\n\n"
+                  f"総ユーザー数: {total} 人\n"
+                  f"登録済み: {registered} 人\n"
+                  f"├ トライアル中: {trial} 人\n"
+                  f"└ 有料会員: {active} 人")
+            return
+
         # その他
         reply(event.reply_token,
               "📌 使えるコマンド:\n"
