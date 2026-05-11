@@ -1,0 +1,75 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>プライバシーポリシー - KU-LMS 課題締切通知サービス</title>
+  <style>
+    body { font-family: sans-serif; max-width: 700px; margin: 40px auto; padding: 0 20px; color: #333; line-height: 1.8; }
+    h1 { font-size: 1.6em; border-bottom: 2px solid #1a73e8; padding-bottom: 8px; }
+    h2 { font-size: 1.2em; margin-top: 32px; color: #1a73e8; }
+    a { color: #1a73e8; }
+    .date { color: #888; font-size: 0.9em; }
+    table { border-collapse: collapse; width: 100%; margin: 12px 0; }
+    th, td { border: 1px solid #ddd; padding: 8px 12px; text-align: left; }
+    th { background: #f0f4ff; }
+  </style>
+</head>
+<body>
+  <h1>プライバシーポリシー</h1>
+  <p class="date">制定日：2026年5月11日</p>
+
+  <p>KU-LMS 課題締切通知サービス（以下「本サービス」）は、ユーザーの個人情報の取り扱いについて以下のとおり定めます。</p>
+
+  <h2>第1条（取得する情報）</h2>
+  <table>
+    <tr><th>情報</th><th>取得方法</th><th>目的</th></tr>
+    <tr><td>LINE ユーザーID</td><td>LINE Messaging API</td><td>メッセージ送信・ユーザー識別</td></tr>
+    <tr><td>工学院大学 統合認証ユーザー名</td><td>ユーザーによる入力</td><td>KU-LMSへのログイン</td></tr>
+    <tr><td>工学院大学 統合認証パスワード</td><td>ユーザーによる入力</td><td>KU-LMSへのログイン（暗号化して保存）</td></tr>
+    <tr><td>通知設定（日数・時間）</td><td>ユーザーによる設定</td><td>通知タイミングの制御</td></tr>
+    <tr><td>決済情報</td><td>Stripe, Inc.（決済代行）</td><td>料金の決済（カード番号は当サービスに届きません）</td></tr>
+  </table>
+
+  <h2>第2条（情報の利用目的）</h2>
+  <p>取得した情報は以下の目的にのみ使用します。</p>
+  <ul>
+    <li>KU-LMSへのログインおよび課題情報の取得</li>
+    <li>LINEによる課題締切通知の送信</li>
+    <li>サービスの提供・改善</li>
+    <li>お問い合わせへの対応</li>
+  </ul>
+
+  <h2>第3条（パスワードの取り扱い）</h2>
+  <p>ユーザーから預かるパスワードは、AES-256方式で暗号化した上でデータベースに保存します。平文での保存・ログへの記録は一切行いません。また、KU-LMSへのログイン以外の目的には使用しません。</p>
+  <p>ユーザーがLINEで「解除」と送信した場合、または本サービスのLINEアカウントをブロックした場合、パスワードは即座に削除されます。</p>
+
+  <h2>第4条（第三者への提供）</h2>
+  <p>以下の場合を除き、ユーザーの情報を第三者に提供することはありません。</p>
+  <ul>
+    <li>ユーザーの同意がある場合</li>
+    <li>法令に基づく場合</li>
+    <li>決済処理のためStripe, Inc.に必要な情報を提供する場合</li>
+  </ul>
+
+  <h2>第5条（外部サービスの利用）</h2>
+  <table>
+    <tr><th>サービス</th><th>用途</th><th>プライバシーポリシー</th></tr>
+    <tr><td>LINE Messaging API</td><td>メッセージ送受信</td><td><a href="https://line.me/ja/terms/policy/" target="_blank">LINE株式会社</a></td></tr>
+    <tr><td>Stripe</td><td>決済処理</td><td><a href="https://stripe.com/jp/privacy" target="_blank">Stripe, Inc.</a></td></tr>
+    <tr><td>Render</td><td>サーバーインフラ</td><td><a href="https://render.com/privacy" target="_blank">Render, Inc.</a></td></tr>
+    <tr><td>Supabase</td><td>データベース</td><td><a href="https://supabase.com/privacy" target="_blank">Supabase, Inc.</a></td></tr>
+  </table>
+
+  <h2>第6条（データの保管・削除）</h2>
+  <p>ユーザーデータはSupabase（PostgreSQL）に保管されます。登録解除またはLINEブロック時にパスワードは即時削除され、その他のデータは合理的な期間内に削除されます。</p>
+
+  <h2>第7条（お問い合わせ）</h2>
+  <p>個人情報の取り扱いに関するお問い合わせは、LINEボット内の「意見箱」よりご連絡ください。</p>
+
+  <h2>第8条（ポリシーの変更）</h2>
+  <p>本ポリシーは予告なく変更されることがあります。重要な変更の場合はLINEにてお知らせします。</p>
+
+  <p style="margin-top:40px;"><a href="index.html">← トップページに戻る</a> ／ <a href="terms.html">利用規約</a></p>
+</body>
+</html>
