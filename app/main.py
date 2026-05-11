@@ -76,9 +76,11 @@ async def stripe_webhook(request: Request):
         JST = timezone(timedelta(hours=9))
 
         session      = event["data"]["object"]
-        line_user_id = session.get("metadata", {}).get("line_user_id", "")
-        payment_type = session.get("metadata", {}).get("payment_type", "")
-        customer_id  = session.get("customer", "")
+        # Stripe SDK v9+ では metadata は StripeObject なので dict に変換
+        metadata     = dict(session.metadata or {})
+        line_user_id = metadata.get("line_user_id", "")
+        payment_type = metadata.get("payment_type", "")
+        customer_id  = getattr(session, "customer", "") or ""
 
         user = get_user(line_user_id)
         if not user:
@@ -108,7 +110,7 @@ async def stripe_webhook(request: Request):
 
     # ── サブスクリプション停止 ──
     elif event["type"] == "customer.subscription.deleted":
-        customer_id = event["data"]["object"].get("customer", "")
+        customer_id = getattr(event["data"]["object"], "customer", "") or ""
         from app.models import get_user_by_stripe_customer, save_user
         user = get_user_by_stripe_customer(customer_id)
         if user:
@@ -121,7 +123,7 @@ async def stripe_webhook(request: Request):
 
     # ── 支払い失敗 ──
     elif event["type"] == "invoice.payment_failed":
-        customer_id = event["data"]["object"].get("customer", "")
+        customer_id = getattr(event["data"]["object"], "customer", "") or ""
         from app.models import get_user_by_stripe_customer
         user = get_user_by_stripe_customer(customer_id)
         if user:
