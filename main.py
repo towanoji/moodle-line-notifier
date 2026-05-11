@@ -202,6 +202,8 @@ def _login_gakunin(
                 method = f.get("method", "post").lower()
                 print(f"[INFO] ログインフォーム送信: {method.upper()} {action}")
                 print(f"[DEBUG]   fields={list(data.keys())}")
+                if method == "get" and any("pass" in k.lower() for k in data):
+                    raise RuntimeError("password in GET query refused")
                 if method == "get":
                     resp = s.get(action, params=data, timeout=30, allow_redirects=True)
                 else:

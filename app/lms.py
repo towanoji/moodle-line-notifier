@@ -202,6 +202,8 @@ def _login_gakunin(
                 action = _abs_url(url, f.get("action", url))
                 method = f.get("method", "post").lower()
                 print(f"  → submit to {action} ({method}) data_keys={list(data.keys())}", flush=True)
+                if method == "get" and filled_pass:
+                    raise RuntimeError("password in GET query refused")
                 if method == "get":
                     resp = s.get(action, params=data, timeout=30, allow_redirects=True)
                 else:
