@@ -146,11 +146,17 @@ def handle_message(event) -> None:
                 save_user(user)
 
                 # Stripe 決済リンクを生成
+                from app.stripe_payment import create_checkout_url, create_paypay_checkout_url
                 try:
                     checkout_url = create_checkout_url(uid)
                 except Exception as e:
                     print(f"[STRIPE] Checkout URL 生成失敗: {e}", file=sys.stderr, flush=True)
                     checkout_url = None
+                try:
+                    paypay_url = create_paypay_checkout_url(uid)
+                except Exception as e:
+                    print(f"[STRIPE] PayPay URL 生成失敗: {e}", file=sys.stderr, flush=True)
+                    paypay_url = None
 
                 msg = (
                     "✅ 登録完了！\n\n"
@@ -159,12 +165,17 @@ def handle_message(event) -> None:
                     "━━━━━━━━━━\n"
                     "🎁 30日間無料トライアル中！\n"
                     "以降は月額199円で継続できます。\n\n"
+                    "お支払い方法を選んでください:\n\n"
                 )
                 if checkout_url:
                     msg += (
-                        "💳 今すぐカードを登録しておくと\n"
-                        "トライアル終了後も自動で継続されます:\n"
+                        "💳 クレジットカード（自動継続）:\n"
                         f"{checkout_url}\n\n"
+                    )
+                if paypay_url:
+                    msg += (
+                        "💰 PayPay（手動月払い）:\n"
+                        f"{paypay_url}\n\n"
                     )
                 msg += (
                     "━━━━━━━━━━\n"
