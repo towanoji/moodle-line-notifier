@@ -110,7 +110,7 @@ def handle_message(event) -> None:
 
     # ── 学籍番号待ち ──
     if user.state in ("NEW", "WAITING_USERNAME"):
-        user.temp_username = text
+        user.username = text          # DBに直接保存（temp_usernameはDB非対応のため）
         user.state = "WAITING_PASSWORD"
         save_user(user)
         reply(event.reply_token,
@@ -177,7 +177,7 @@ def handle_message(event) -> None:
                 # 失敗（詳細ログ）
                 print(f"[LOGIN ERROR] {username}: {e}", file=sys.stderr, flush=True)
                 user.state = "WAITING_USERNAME"
-                user.temp_username = ""
+                user.username = ""
                 save_user(user)
                 push(uid,
                      "❌ ログインに失敗しました。\n\n"
@@ -186,7 +186,7 @@ def handle_message(event) -> None:
 
         t = threading.Thread(
             target=_try_login,
-            args=(uid, user.temp_username, text),
+            args=(uid, user.username, text),
             daemon=True,
         )
         t.start()
