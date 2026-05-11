@@ -1,0 +1,32 @@
+name: 一括通知（パスワード取り扱いお知らせ）
+
+on:
+  # GitHub の Actions タブから手動実行のみ
+  workflow_dispatch:
+
+jobs:
+  push_notice:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - name: リポジトリをチェックアウト
+        uses: actions/checkout@v4
+
+      - name: Python 3.12 セットアップ
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: 'pip'
+
+      - name: 依存ライブラリのインストール
+        run: pip install -r requirements.txt
+
+      - name: 一括通知スクリプトを実行
+        env:
+          DATABASE_URL:                ${{ secrets.DATABASE_URL }}
+          ENCRYPTION_KEY:              ${{ secrets.ENCRYPTION_KEY }}
+          LINE_CHANNEL_ACCESS_TOKEN:   ${{ secrets.LINE_CHANNEL_ACCESS_TOKEN }}
+          STRIPE_SECRET_KEY:           ${{ secrets.STRIPE_SECRET_KEY }}
+          PAYPAY_PRICE_ID:             ${{ secrets.PAYPAY_PRICE_ID }}
+        run: python push_notice.py
