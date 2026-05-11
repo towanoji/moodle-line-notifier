@@ -107,24 +107,10 @@ def run_notifications() -> None:
 
 
 def start_scheduler() -> BackgroundScheduler:
-    """スケジューラを起動して返す"""
-    scheduler = BackgroundScheduler(timezone=JST)
-
-    # 毎朝 7:00 JST（日数ベース通知: 3日前・1日前）
-    scheduler.add_job(
-        run_notifications,
-        CronTrigger(hour=7, minute=0, timezone=JST),
-        id="notify_morning",
-        replace_existing=True,
-    )
-    # 毎日 12:00 JST（時間ベース通知: 12時間前）
-    scheduler.add_job(
-        run_notifications,
-        CronTrigger(hour=12, minute=0, timezone=JST),
-        id="notify_noon",
-        replace_existing=True,
-    )
-
-    scheduler.start()
-    print("✅ スケジューラ起動: 7:00 JST / 12:00 JST", flush=True)
-    return scheduler
+    """
+    通知スケジューラ（無効化済み）
+    通知は GitHub Actions (notify_all.py) が担当するため、
+    Render 側のスケジューラは起動しない。
+    """
+    print("ℹ️ スケジューラは無効化（通知は GitHub Actions が担当）", flush=True)
+    return None
