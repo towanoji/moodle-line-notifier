@@ -110,6 +110,35 @@ def process_user(user, now: datetime, today) -> None:
         print(f"  [{user.username}] {len(to_notify)} 件通知送信完了", flush=True)
 
 
+def send_paypay_reminder(user, now: datetime) -> None:
+    """トライアル/PayPay期限が3日以内のユーザーにPayPay支払いリンクを送信"""
+    if user.subscription_status == "active":
+        return  # クレジットカード自動更新ユーザーはスキップ
+    if user.trial_ends_at is None:
+        return
+
+    days_left = (user.trial_ends_at.date() - now.date()).days
+    if days_left not in (3, 1):
+        return
+
+    try:
+        from app.stripe_payment import create_paypay_checkout_url
+        url = create_paypay_checkout_url(user.line_user_id)
+        msg = (
+            f"⏰ ご利用期限まであと {days_left} 日です！\n\n"
+            "引き続きご利用いただくには\n"
+            "月額199円をお支払いください。\n\n"
+            "💰 PayPayでお支払いはこちら:\n"
+            f"{url}\n\n"
+            "💳 クレジットカードで自動継続する場合は\n"
+            "「サブスク」と送ってください。"
+        )
+        send_line_push(user.line_user_id, msg)
+        print(f"  [{user.username}] PayPayリマインダー送信（残{days_left}日）", flush=True)
+    except Exception as e:
+        print(f"  [{user.username}] PayPayリマインダー失敗: {e}", file=sys.stderr, flush=True)
+
+
 def main() -> None:
     # 必須環境変数チェック
     missing = [k for k, v in [
@@ -122,13 +151,22 @@ def main() -> None:
         sys.exit(1)
 
     from app.database import init_db
-    from app.models import get_all_registered
+    from app.models import get_all_registered, get_all_trial_expiring
 
     init_db()
 
     now   = datetime.now(tz=JST)
     today = now.date()
     print(f"[{now.strftime('%Y/%m/%d %H:%M')} JST] 全ユーザー通知開始", flush=True)
+
+    # PayPay期限リマインダー（期限切れ間近の全登録ユーザー対象）
+    from app.database import get_session, UserRecord
+    from app.models import _record_to_user
+    with get_session() as s:
+        records = s.query(UserRecord).filter(UserRecord.state == "REGISTERED").all()
+        all_users = [_record_to_user(r) for r in records]
+    for user in all_users:
+        send_paypay_reminder(user, now)
 
     users = get_all_registered()
     print(f"対象ユーザー数: {len(users)} 人", flush=True)

@@ -36,4 +36,6 @@ jobs:
           ENCRYPTION_KEY:              ${{ secrets.ENCRYPTION_KEY }}
           MOODLE_URL:                  ${{ secrets.MOODLE_URL }}
           LINE_CHANNEL_ACCESS_TOKEN:   ${{ secrets.LINE_CHANNEL_ACCESS_TOKEN }}
+          STRIPE_SECRET_KEY:           ${{ secrets.STRIPE_SECRET_KEY }}
+          PAYPAY_PRICE_ID:             ${{ secrets.PAYPAY_PRICE_ID }}
         run: python notify_all.py

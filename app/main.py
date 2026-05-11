@@ -70,21 +70,39 @@ async def stripe_webhook(request: Request):
 
     print(f"[STRIPE] イベント受信: {event['type']}", flush=True)
 
-    # ── 決済完了（サブスク開始）──
+    # ── 決済完了（サブスク開始 or PayPay一回払い）──
     if event["type"] == "checkout.session.completed":
-        session = event["data"]["object"]
+        from datetime import datetime, timedelta, timezone
+        JST = timezone(timedelta(hours=9))
+
+        session      = event["data"]["object"]
         line_user_id = session.get("metadata", {}).get("line_user_id", "")
+        payment_type = session.get("metadata", {}).get("payment_type", "")
         customer_id  = session.get("customer", "")
 
         user = get_user(line_user_id)
-        if user:
+        if not user:
+            print(f"[STRIPE] ユーザー不明: {line_user_id}", flush=True)
+        elif payment_type == "paypay_monthly":
+            # PayPay 手動月払い → trial_ends_at を30日延長
+            now  = datetime.now(tz=JST)
+            base = user.trial_ends_at if (user.trial_ends_at and user.trial_ends_at > now) else now
+            user.trial_ends_at = base + timedelta(days=30)
+            save_user(user)
+            push(line_user_id,
+                 "✅ PayPayでのお支払いが確認できました！\n\n"
+                 f"ご利用期限: {user.trial_ends_at.strftime('%Y/%m/%d')} まで\n"
+                 "引き続きご利用ください 📚")
+            print(f"[STRIPE] PayPay {line_user_id} → +30日 ({user.trial_ends_at.strftime('%Y/%m/%d')})", flush=True)
+        else:
+            # クレジットカード サブスク
             user.stripe_customer_id  = customer_id
             user.subscription_status = "active"
             save_user(user)
             push(line_user_id,
                  "✅ カードの登録が完了しました！\n\n"
-                 "14日間の無料トライアル終了後、\n"
-                 "月額200円で自動継続されます。\n"
+                 "30日間の無料トライアル終了後、\n"
+                 "月額199円で自動継続されます。\n"
                  "引き続きお使いください 📚")
             print(f"[STRIPE] {line_user_id} → active", flush=True)
 
