@@ -209,9 +209,17 @@ def handle_message(event) -> None:
               "引き続きご利用ください 📚")
         return
 
-    # ── 学籍番号待ち ──
-    if user.state in ("NEW", "WAITING_USERNAME"):
-        user.username = text          # DBに直接保存（temp_usernameはDB非対応のため）
+    # ── ユーザー名待ち ──
+    if user.state == "NEW":
+        # NEW状態では何が来てもユーザー名入力を促す
+        user.state = "WAITING_USERNAME"
+        save_user(user)
+        reply(event.reply_token,
+              "📌 ユーザー名を入力してください。\n例: ab123456")
+        return
+
+    if user.state == "WAITING_USERNAME":
+        user.username = text
         user.state = "WAITING_PASSWORD"
         save_user(user)
         reply(event.reply_token,
@@ -357,8 +365,9 @@ def handle_message(event) -> None:
             save_user(user)
             reply(event.reply_token,
                   "✅ 登録を解除しました。\n\n"
-                  "再度登録するには「友だち追加」し直すか\n"
-                  "このトークルームにメッセージを送ってください。")
+                  "再度登録するには\n"
+                  "ユーザー名を入力してください。\n"
+                  "例: ab123456")
             return
 
         if text == "意見箱":
