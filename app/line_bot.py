@@ -85,8 +85,8 @@ def handle_follow(event) -> None:
     reply(event.reply_token,
           "👋 KU-LMS 課題締切通知ボットへようこそ！\n\n"
           "工学院大学の統合認証（GakuNin）の\n"
-          "📌 学籍番号を入力してください。\n\n"
-          "例: up123456\n\n"
+          "📌 ユーザー名を入力してください。\n\n"
+          "例: ab123456\n\n"
           "━━━━━━━━━━\n"
           "⚠️ ご注意\n"
           "入力したパスワードは暗号化してサーバーに保存されます。\n"
@@ -133,7 +133,7 @@ def handle_message(event) -> None:
         user.state = "WAITING_PASSWORD"
         save_user(user)
         reply(event.reply_token,
-              f"✅ 学籍番号: {text}\n\n"
+              f"✅ ユーザー名: {text}\n\n"
               "🔑 統合認証のパスワードを入力してください。\n\n"
               "⚠️ このメッセージは送信後すぐに処理され、\n"
               "ログ等には残りません。")
@@ -212,8 +212,9 @@ def handle_message(event) -> None:
                 save_user(user)
                 push(uid,
                      "❌ ログインに失敗しました。\n\n"
-                     "学籍番号またはパスワードが正しくない可能性があります。\n\n"
-                     "再度、学籍番号を入力してください。")
+                     "ユーザー名またはパスワードが正しくない可能性があります。\n\n"
+                     "再度、ユーザー名を入力してください。\n"
+                     "例: ab123456")
 
         t = threading.Thread(
             target=_try_login,
@@ -274,7 +275,8 @@ def handle_message(event) -> None:
             save_user(user)
             reply(event.reply_token,
                   "✅ 登録を解除しました。\n\n"
-                  "再度登録するには学籍番号を入力してください。")
+                  "再度登録するにはユーザー名を入力してください。\n"
+                  "例: ab123456")
             return
 
         if text == "意見箱":
@@ -300,4 +302,4 @@ def handle_message(event) -> None:
     # NEW / 不明な状態
     user.state = "WAITING_USERNAME"
     save_user(user)
-    reply(event.reply_token, "📌 学籍番号を入力してください。")
+    reply(event.reply_token, "📌 ユーザー名を入力してください。\n例: ab123456")
