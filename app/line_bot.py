@@ -41,6 +41,7 @@ from app.crypto import encrypt
 
 CHANNEL_SECRET       = os.environ.get("LINE_CHANNEL_SECRET", "")
 CHANNEL_ACCESS_TOKEN = os.environ.get("LINE_CHANNEL_ACCESS_TOKEN", "")
+DEVELOPER_LINE_USER_ID = os.environ.get("DEVELOPER_LINE_USER_ID", "")
 
 handler       = WebhookHandler(CHANNEL_SECRET)
 configuration = Configuration(access_token=CHANNEL_ACCESS_TOKEN)
@@ -107,6 +108,29 @@ def handle_message(event) -> None:
     uid  = event.source.user_id
     text = event.message.text.strip()
     user = get_or_create_user(uid)
+
+    # ── User ID確認（開発者用・後で削除）──
+    if text == "userid":
+        reply(event.reply_token, f"Your LINE User ID:\n{uid}")
+        return
+
+    # ── 意見箱（フィードバック待ち）──
+    if user.state == "WAITING_FEEDBACK":
+        # 開発者に転送
+        if DEVELOPER_LINE_USER_ID:
+            push(DEVELOPER_LINE_USER_ID,
+                 f"📬 【意見箱】\n"
+                 f"ユーザー: {uid}\n\n"
+                 f"{text}")
+        # 状態を戻す
+        user.state = "REGISTERED"
+        save_user(user)
+        reply(event.reply_token,
+              "✅ ご意見ありがとうございます！\n\n"
+              "開発者に届けました。\n"
+              "いただいたご意見はサービス改善に活かします 🙏\n\n"
+              "引き続きご利用ください 📚")
+        return
 
     # ── 学籍番号待ち ──
     if user.state in ("NEW", "WAITING_USERNAME"):
@@ -257,10 +281,23 @@ def handle_message(event) -> None:
                   "再度登録するには学籍番号を入力してください。")
             return
 
+        if text == "意見箱":
+            user.state = "WAITING_FEEDBACK"
+            save_user(user)
+            reply(event.reply_token,
+                  "📬 意見・要望を受け付けます！\n\n"
+                  "サービスへのご意見・ご要望・\n"
+                  "不具合報告などをそのまま\n"
+                  "メッセージで送ってください。\n\n"
+                  "開発者に直接届きます 📩\n"
+                  "（返信できない場合があります）")
+            return
+
         # その他
         reply(event.reply_token,
               "📌 使えるコマンド:\n"
               "「設定」→ 通知タイミングの確認・変更\n"
+              "「意見箱」→ ご意見・ご要望を送る\n"
               "「解除」→ 登録を削除")
         return
 
