@@ -3,8 +3,8 @@ stripe_payment.py  ―  Stripe 決済連携
 ========================================
 フロー:
   1. ユーザー登録完了 → Stripe Checkout URL を LINE で送信
-  2. ユーザーがカードを登録（14日間の無料トライアル付き）
-  3. 14日後に自動で月額200円が課金される
+  2. ユーザーがカードを登録（30日間の無料トライアル付き）
+  3. 30日後に自動で月額199円が課金される
   4. Stripe Webhook でサブスク状態を同期する
 """
 
@@ -16,7 +16,7 @@ PRICE_ID            = os.environ.get("STRIPE_PRICE_ID", "")
 WEBHOOK_SECRET      = os.environ.get("STRIPE_WEBHOOK_SECRET", "")
 APP_URL             = os.environ.get("APP_URL", "https://ku-lms-notifier.onrender.com")
 
-TRIAL_DAYS = 14
+TRIAL_DAYS = 30
 
 
 def create_checkout_url(line_user_id: str, customer_id: str = "") -> str:
