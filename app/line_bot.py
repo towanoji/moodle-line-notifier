@@ -109,11 +109,6 @@ def handle_message(event) -> None:
     text = event.message.text.strip()
     user = get_or_create_user(uid)
 
-    # ── User ID確認（開発者用・後で削除）──
-    if text == "userid":
-        reply(event.reply_token, f"Your LINE User ID:\n{uid}")
-        return
-
     # ── 意見箱（フィードバック待ち）──
     if user.state == "WAITING_FEEDBACK":
         # 開発者に転送
