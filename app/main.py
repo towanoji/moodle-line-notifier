@@ -76,10 +76,10 @@ async def stripe_webhook(request: Request):
         JST = timezone(timedelta(hours=9))
 
         session      = event["data"]["object"]
-        # Stripe SDK v9+ では metadata は StripeObject なので dict に変換
-        metadata     = dict(session.metadata or {})
-        line_user_id = metadata.get("line_user_id", "")
-        payment_type = metadata.get("payment_type", "")
+        # Stripe SDK v9+ では metadata は StripeObject なので getattr でアクセス
+        meta         = getattr(session, "metadata", None) or {}
+        line_user_id = getattr(meta, "line_user_id", "") or ""
+        payment_type = getattr(meta, "payment_type", "") or ""
         customer_id  = getattr(session, "customer", "") or ""
 
         user = get_user(line_user_id)
