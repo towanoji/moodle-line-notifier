@@ -175,10 +175,7 @@ def handle_message(event) -> None:
         # ログイン処理は別スレッドで行い、結果を push で送る
         def _try_login(uid: str, username: str, password: str) -> None:
             import sys
-            from datetime import datetime, timedelta, timezone
             from app.lms import login_session_for_user
-            from app.stripe_payment import create_checkout_url
-            JST = timezone(timedelta(hours=9))
             try:
                 print(f"[LOGIN] {username} のログイン試行開始", flush=True)
                 login_session_for_user(username, password)
@@ -188,43 +185,16 @@ def handle_message(event) -> None:
                 user.password_enc  = encrypt(password)
                 user.temp_username = ""
                 user.state         = "REGISTERED"
-                user.subscription_status = "trial"
-                user.trial_ends_at = datetime.now(tz=JST) + timedelta(days=30)
+                user.subscription_status = "active"
+                user.trial_ends_at = None
                 save_user(user)
-
-                # Stripe 決済リンクを生成
-                from app.stripe_payment import create_checkout_url, create_paypay_checkout_url
-                try:
-                    checkout_url = create_checkout_url(uid)
-                except Exception as e:
-                    print(f"[STRIPE] Checkout URL 生成失敗: {e}", file=sys.stderr, flush=True)
-                    checkout_url = None
-                try:
-                    paypay_url = create_paypay_checkout_url(uid)
-                except Exception as e:
-                    print(f"[STRIPE] PayPay URL 生成失敗: {e}", file=sys.stderr, flush=True)
-                    paypay_url = None
 
                 msg = (
                     "✅ 登録完了！\n\n"
                     "毎朝 7:00 と 12:00 に課題の締切を確認して\n"
                     "📅 3日前・1日前・12時間前に通知します。\n\n"
                     "━━━━━━━━━━\n"
-                    "🎁 30日間無料トライアル中！\n"
-                    "以降は月額199円で継続できます。\n\n"
-                    "お支払い方法を選んでください:\n\n"
-                )
-                if checkout_url:
-                    msg += (
-                        "💳 クレジットカード（自動継続）:\n"
-                        f"{checkout_url}\n\n"
-                    )
-                if paypay_url:
-                    msg += (
-                        "💰 PayPay（手動月払い）:\n"
-                        f"{paypay_url}\n\n"
-                    )
-                msg += (
+                    "🎁 現在、無料でご利用いただけます！\n\n"
                     "━━━━━━━━━━\n"
                     "使えるコマンド:\n"
                     "「設定」→ 通知タイミングの確認・変更\n"

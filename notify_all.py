@@ -158,22 +158,13 @@ def main() -> None:
         sys.exit(1)
 
     from app.database import init_db
-    from app.models import get_all_registered, get_all_trial_expiring
+    from app.models import get_all_registered
 
     init_db()
 
     now   = datetime.now(tz=JST)
     today = now.date()
     print(f"[{now.strftime('%Y/%m/%d %H:%M')} JST] 全ユーザー通知開始", flush=True)
-
-    # PayPay期限リマインダー（期限切れ間近の全登録ユーザー対象）
-    from app.database import get_session, UserRecord
-    from app.models import _record_to_user
-    with get_session() as s:
-        records = s.query(UserRecord).filter(UserRecord.state == "REGISTERED").all()
-        all_users = [_record_to_user(r) for r in records]
-    for user in all_users:
-        send_paypay_reminder(user, now)
 
     users = get_all_registered()
     print(f"対象ユーザー数: {len(users)} 人", flush=True)
