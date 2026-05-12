@@ -14,6 +14,7 @@ from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, Request, HTTPException
 from fastapi.responses import HTMLResponse
+from linebot.v3.exceptions import InvalidSignatureError
 
 from app.line_bot import handler, push
 from app.scheduler import start_scheduler
@@ -44,8 +45,11 @@ async def webhook(request: Request):
     body = await request.body()
     try:
         handler.handle(body.decode("utf-8"), signature)
+    except InvalidSignatureError:
+        raise HTTPException(status_code=400, detail="invalid signature")
     except Exception as e:
-        raise HTTPException(status_code=400, detail=str(e))
+        print(f"[WEBHOOK ERROR] {e}", file=sys.stderr, flush=True)
+        raise HTTPException(status_code=500, detail="internal error")
     return {"status": "ok"}
 
 
@@ -66,7 +70,7 @@ async def stripe_webhook(request: Request):
         event = handle_webhook_event(payload, sig_header)
     except ValueError as e:
         print(f"[STRIPE WEBHOOK ERROR] {e}", file=sys.stderr, flush=True)
-        raise HTTPException(status_code=400, detail=str(e))
+        raise HTTPException(status_code=400, detail="invalid signature")
 
     print(f"[STRIPE] イベント受信: {event['type']}", flush=True)
 
